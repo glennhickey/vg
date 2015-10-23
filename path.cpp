@@ -124,7 +124,7 @@ Path& append_path(Path& a, const Path& b) {
 }
 
 // problem, won't allow us to keep multiple identical mapping to the same node,
-// as will happen with looping paths
+// as will happen with looping paths (update -- so we don't use it)
 bool Paths::has_mapping(const string& name, const Mapping& m) {
     auto& node_mapping = get_node_mapping(m.position().node_id());
     for (auto& p : node_mapping) {
@@ -139,19 +139,15 @@ bool Paths::has_mapping(const string& name, const Mapping& m) {
 void Paths::append_mapping(const string& name, const Mapping& m) {
     // get or create the path with this name
     list<Mapping>& pt = get_create_path(name);
-    // now if we haven't already supplied a mapping
-    // add it
-    if (!has_mapping(name, m)) {
-        pt.push_back(m);
-        Mapping* mp = &pt.back();
-        // add it to the node mappings
-        auto& ms = get_node_mapping(m.position().node_id());
-        ms.insert(make_pair(name, mp));
-        // and record its position in this list
-        list<Mapping>::iterator mi = pt.end(); --mi;
-        mapping_itr[mp] = mi;
-        mapping_path[mp] = name;
-    }
+    pt.push_back(m);
+    Mapping* mp = &pt.back();
+    // add it to the node mappings
+    auto& ms = get_node_mapping(m.position().node_id());
+    ms.insert(make_pair(name, mp));
+    // and record its position in this list
+    list<Mapping>::iterator mi = pt.end(); --mi;
+    mapping_itr[mp] = mi;
+    mapping_path[mp] = name;
 }
 
 void Paths::append_mapping(const string& name, int64_t id, bool is_reverse) {
