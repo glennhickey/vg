@@ -435,6 +435,7 @@ void help_pileup(char** argv) {
          << "options:" << endl
          << "    -j, --json           output in JSON" << endl
          << "    -p, --progress       show progress" << endl
+         << "    -s, --skip-secondary ignore secondary alignments" << endl
          << "    -t, --threads N      number of threads to use" << endl;
 }
 
@@ -447,6 +448,7 @@ int main_pileup(int argc, char** argv) {
 
     bool output_json = false;
     bool show_progress = false;
+    bool skip_secondary = false;
     int thread_count = 1;
 
     int c;
@@ -456,12 +458,13 @@ int main_pileup(int argc, char** argv) {
             {
                 {"json", required_argument, 0, 'j'},
                 {"progress", required_argument, 0, 'p'},
+                {"skip-secondary", required_argument, 0, 's'},
                 {"threads", required_argument, 0, 't'},
                 {0, 0, 0, 0}
             };
 
         int option_index = 0;
-        c = getopt_long (argc, argv, "jpt:",
+        c = getopt_long (argc, argv, "jpst:",
                          long_options, &option_index);
 
         /* Detect the end of the options. */
@@ -475,6 +478,9 @@ int main_pileup(int argc, char** argv) {
             break;
         case 'p':
             show_progress = true;
+            break;
+        case 's':
+          skip_secondary = true;
             break;
         case 't':
             thread_count = atoi(optarg);
@@ -535,9 +541,11 @@ int main_pileup(int argc, char** argv) {
         cerr << "Computing pileups" << endl;
     }
     vector<Pileups> pileups(thread_count);
-    function<void(Alignment&)> lambda = [&pileups, &graph](Alignment& aln) {
-        int tid = omp_get_thread_num();
-        pileups[tid].compute_from_alignment(*graph, aln);
+    function<void(Alignment&)> lambda = [&pileups, &graph, &skip_secondary](Alignment& aln) {
+        if (!skip_secondary || !aln.is_secondary()) {
+            int tid = omp_get_thread_num();
+            pileups[tid].compute_from_alignment(*graph, aln);
+        }
     };
     stream::for_each_parallel(*alignment_stream, lambda);
 
@@ -4044,7 +4052,7 @@ int main_map(int argc, char** argv) {
                 line.clear();
 #pragma omp critical (readq)
                 {
-                    more_data = std::getline(in,line);
+                    more_data = (bool)std::getline(in,line);
                 }
                 if (!line.empty()) {
                     // Make an alignment
