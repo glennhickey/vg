@@ -27,7 +27,8 @@ Caller::Caller(VG* graph,
                double min_frac,
                double min_likelihood, 
                bool leave_uncalled,
-               int default_quality):
+               int default_quality,
+               ostream* text_calls):
     _graph(graph),
     _het_log_prior(safe_log(het_prior)),
     _hom_log_prior(safe_log(.5 * (1. - het_prior))),
@@ -37,7 +38,8 @@ Caller::Caller(VG* graph,
     _min_frac(min_frac),
     _min_log_likelihood(safe_log(min_likelihood)),
     _leave_uncalled(leave_uncalled),
-    _default_quality(default_quality) {
+    _default_quality(default_quality),
+    _text_calls(text_calls) {
     _max_id = _graph->max_node_id();
 }
 
@@ -83,6 +85,11 @@ void Caller::call_node_pileup(const NodePileup& pileup) {
     // add nodes and edges created when making calls to the output graph
     // (_side_map gets updated)
     create_node_calls(pileup);
+
+    // stream out vcf-like text of calls if desired
+    if (_text_calls != NULL) {
+      write_text_calls();
+    }
 
     _visited_nodes.insert(_node->id());
 }
@@ -396,6 +403,21 @@ void Caller::create_snp_path(int64_t snp_node, bool secondary_snp) {
         mappings.push_back(mapping);
         _call_graph.paths._paths.insert(make_pair(name.str(), mappings));
     }
+}
+
+void Caller::write_text_calls() {
+  
+  int n = _node->sequence().length();
+  const string& seq = _node->sequence();
+
+  for (int i = 0; i < n; ++i) {
+    // use 1-based coordinates like vcf
+    *_text_calls << _node->id() << "\t" << (i + 1) << "\t"
+       // reference base
+                 << seq[i] << "\t"
+       // two comma-separated alternate bases
+                 << _node_calls[i].first << "," << _node_calls[i].second << "\n";
+  }  
 }
 
 }
