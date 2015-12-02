@@ -49,7 +49,8 @@ public:
            double min_frac = Default_min_frac,
            double min_likelihood = Default_min_likelihood, 
            bool leave_uncalled = false,
-           int default_quality = Default_default_quality);
+           int default_quality = Default_default_quality,
+           ostream* text_calls = NULL);
     ~Caller();
     void clear();
 
@@ -57,6 +58,8 @@ public:
     VG* _graph;
     // output called graph
     VG _call_graph;
+    // optional text file of calls
+    ostream* _text_calls;
 
     // buffer for base calls for each position in the node
     // . = reference
@@ -129,6 +132,9 @@ public:
 
     // make a path corresponding to a snp in the call grpah
     void create_snp_path(int64_t snp_node, bool secondary_snp);
+
+    // write out vcf-like text calls for a node
+    void write_text_calls();
 
     // convert nucleotide base into integer
     static int nidx(char c) {

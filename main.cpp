@@ -264,6 +264,7 @@ void help_call(char** argv) {
          << "    -q, --default_read_qual phred quality score to use if none found in the pileup (default="
          << (int)Caller::Default_default_quality << ")" << endl
          << "    -l, --leave_uncalled    leave un-called graph regions in output" << endl
+         << "    -c, --calls CALLS       write calls for each base in VCF-like text file CALLS." << endl
          << "    -j, --json              output in JSON" << endl
          << "    -p, --progress          show progress" << endl
          << "    -t, --threads N         number of threads to use" << endl;
@@ -282,6 +283,7 @@ int main_call(int argc, char** argv) {
     int min_support = Caller::Default_min_support;
     int default_read_qual = Caller::Default_default_quality;
     bool leave_uncalled = false;
+    string calls_file;
     bool output_json = false;
     bool show_progress = false;
     int thread_count = 1;
@@ -296,6 +298,7 @@ int main_call(int argc, char** argv) {
                 {"min_support", required_argument, 0, 's'},
                 {"default_read_qual", required_argument, 0, 'q'},
                 {"leave_uncalled", no_argument, 0, 'l'},
+                {"calls", required_argument, 0, 'c'},
                 {"json", no_argument, 0, 'j'},
                 {"progress", no_argument, 0, 'p'},
                 {"het_prior", required_argument, 0, 'r'},
@@ -304,7 +307,7 @@ int main_call(int argc, char** argv) {
             };
 
         int option_index = 0;
-        c = getopt_long (argc, argv, "d:e:s:q:ljpr:t:",
+        c = getopt_long (argc, argv, "d:e:s:q:lc:jpr:t:",
                          long_options, &option_index);
 
         /* Detect the end of the options. */
@@ -327,6 +330,9 @@ int main_call(int argc, char** argv) {
             break;
         case 'l':
             leave_uncalled = true;
+            break;
+        case 'c':
+            calls_file = optarg;
             break;
         case 'j':
             output_json = true;
@@ -399,6 +405,14 @@ int main_call(int argc, char** argv) {
         pileup_stream = &in;
     }
 
+    ofstream* text_file_stream = NULL;
+    if (!calls_file.empty()) {
+        text_file_stream = new ofstream(calls_file.c_str());
+        if (!text_file_stream) {
+            cerr << "error: calls file " << calls_file << " cannot be opened for writing." << endl;
+        }
+    }
+
     // compute the variants.
     if (show_progress) {
         cerr << "Computing variants" << endl;
@@ -406,7 +420,7 @@ int main_call(int argc, char** argv) {
     Caller caller(graph,
                   het_prior, min_depth, max_depth, min_support,
                   Caller::Default_min_frac, Caller::Default_min_likelihood,
-                  leave_uncalled, default_read_qual);
+                  leave_uncalled, default_read_qual, text_file_stream);
 
     function<void(NodePileup&)> lambda = [&caller](NodePileup& pileup) {
         caller.call_node_pileup(pileup);
@@ -424,6 +438,11 @@ int main_call(int argc, char** argv) {
         cerr << "Writing call graph" << endl;
     }
     caller.write_call_graph(cout, output_json);
+
+    // close text file
+    if (text_file_stream != NULL) {
+        delete text_file_stream;
+    }
 
     return 0;
 }
