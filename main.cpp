@@ -132,6 +132,7 @@ void help_compare(char** argv) {
          << "options:" << endl
          << "    -d, --db-name1 FILE  use this db for graph1 (defaults to <graph1>.index/)" << endl
          << "    -e, --db-name2 FILE  use this db for graph2 (defaults to <graph1>.index/)" << endl
+         << "    -i, --ignore-ns      don't count kmers that contain one or more N's" << endl
          << "    -t, --threads N      number of threads to use" << endl;
 }
 
@@ -144,6 +145,7 @@ int main_compare(int argc, char** argv) {
 
     string db_name1;
     string db_name2;
+    bool ignore_ns = false;
     int num_threads = 1;
 
     int c;
@@ -154,12 +156,13 @@ int main_compare(int argc, char** argv) {
                 {"help", no_argument, 0, 'h'},
                 {"db-name1", required_argument, 0, 'd'},
                 {"db-name2", required_argument, 0, 'e'},
+                {"--ignore-ns", no_argument, 0, 'i'},
                 {"threads", required_argument, 0, 't'},
                 {0, 0, 0, 0}
             };
 
         int option_index = 0;
-        c = getopt_long (argc, argv, "hd:e:t:",
+        c = getopt_long (argc, argv, "hd:e:it:",
                          long_options, &option_index);
 
         // Detect the end of the options.
@@ -175,6 +178,10 @@ int main_compare(int argc, char** argv) {
 
         case 'e':
             db_name2 = optarg;
+            break;
+
+        case 'i':
+            ignore_ns = true;
             break;
 
         case 't':
@@ -221,11 +228,11 @@ int main_compare(int argc, char** argv) {
     {
 #pragma omp section
         {
-            index1_vs_index2 = index1.compare_kmers(index2);
+            index1_vs_index2 = index1.compare_kmers(index2, ignore_ns);
         }
 #pragma omp section
         {
-            index2_vs_index1 = index2.compare_kmers(index1);
+            index2_vs_index1 = index2.compare_kmers(index1, ignore_ns);
         }
     }
 {// <-- for emacs
