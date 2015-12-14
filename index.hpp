@@ -300,7 +300,7 @@ public:
     string first_kmer_key(const string& kmer);
     // compare kmers with other index: count the number of unique kmers (taking into account strand)
     // in this index that are found in other, and the number not found.  return <#found, #not found> pair
-    pair<int64_t, int64_t> compare_kmers(Index& other);
+   pair<int64_t, int64_t> compare_kmers(Index& other, bool ignoreNs);
 
     // paths
     int64_t get_max_path_id(void);

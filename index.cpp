@@ -1893,7 +1893,7 @@ string Index::first_kmer_key(const string& kmer) {
     return found_key;
 }
 
-pair<int64_t, int64_t> Index::compare_kmers(Index& other) {
+pair<int64_t, int64_t> Index::compare_kmers(Index& other, bool ignoreNs) {
     int64_t outFound = 0;
     int64_t outNotFound = 0;
     string prev_kmer;
@@ -1906,7 +1906,9 @@ pair<int64_t, int64_t> Index::compare_kmers(Index& other) {
             parse_kmer(key, value, kmer, id, pos);
 
             // only visit first kmer when multiple occurances with dif. ids in a row
-            if (kmer != prev_kmer) {
+            if (kmer != prev_kmer &&
+                // toggle ignoreNs (either case).
+                (!ignoreNs || kmer.find("N") == kmer.find("n"))) {
 
                 string remk = reverse_complement(kmer);
                 string remk_key = first_kmer_key(remk);
