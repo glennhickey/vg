@@ -67,9 +67,9 @@ bool Pileups::insert(NodePileup* pileup) {
 }
 
 void Pileups::compute_from_alignment(VG& graph, Alignment& alignment) {
-    if (alignment.is_reverse()) {
-        flip_alignment(alignment);
-    }
+    // note to self: alignment.is_reverse() just means the read
+    // got reversed when put into sequence.  we do not need to
+    // handle it all here
     const Path& path = alignment.path();
     int64_t read_offset = 0;
     for (int i = 0; i < path.mapping_size(); ++i) {
@@ -273,28 +273,6 @@ void Pileups::parse_base_offsets(const BasePileup& bp,
         }
     }
     assert(base_offset == bases.length());
-}
-
-void Pileups::flip_alignment(Alignment& alignment) {
-    string rev_seq = reverse_complement(alignment.sequence());
-    int to_pos = 0;
-    Path* path = alignment.mutable_path();
-    for (int i = 0; i < path->mapping_size(); ++i) {
-        Mapping* mapping = path->mutable_mapping(i);
-        for (int j = 0; j < mapping->edit_size(); ++j) {
-            Edit* edit = mapping->mutable_edit(j);
-            if (edit->to_length() > 0) {
-                if (edit->sequence().length() > 0) {
-                    int start_offset = rev_seq.length() - to_pos - edit->to_length();
-                    assert (start_offset >=0 && start_offset < rev_seq.length());
-                    edit->set_sequence(rev_seq.substr(start_offset, edit->to_length()));
-                }
-                to_pos += edit->to_length();
-            }
-        }
-    }
-    alignment.set_sequence(reverse_complement(rev_seq));
-    alignment.set_is_reverse(!alignment.is_reverse());
 }
 
 }
