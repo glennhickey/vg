@@ -88,7 +88,7 @@ void Caller::call_node_pileup(const NodePileup& pileup) {
 
     // stream out vcf-like text of calls if desired
     if (_text_calls != NULL) {
-      write_text_calls();
+      write_text_calls(pileup);
     }
 
     _visited_nodes.insert(_node->id());
@@ -405,18 +405,25 @@ void Caller::create_snp_path(int64_t snp_node, bool secondary_snp) {
     }
 }
 
-void Caller::write_text_calls() {
+void Caller::write_text_calls(const NodePileup& pileup) {
   
   int n = _node->sequence().length();
   const string& seq = _node->sequence();
 
+  char* cat[3] = {"MISSING", "REF", "SNP"};
+  
   for (int i = 0; i < n; ++i) {
+      
     // use 1-based coordinates like vcf
     *_text_calls << _node->id() << "\t" << (i + 1) << "\t"
-       // reference base
+        // reference base
                  << seq[i] << "\t"
-       // two comma-separated alternate bases
-                 << _node_calls[i].first << "," << _node_calls[i].second << "\n";
+        // two comma-separated alternate bases
+                 << _node_calls[i].first << "," << _node_calls[i].second << "\t"
+        // category
+                 << cat[call_cat(_node_calls[i])] << "\t"
+        // pileup for debugging
+                 << pileup.base_pileup(i).bases() << "\n";
   }  
 }
 

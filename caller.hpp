@@ -134,7 +134,7 @@ public:
     void create_snp_path(int64_t snp_node, bool secondary_snp);
 
     // write out vcf-like text calls for a node
-    void write_text_calls();
+    void write_text_calls(const NodePileup& pileup);
 
     // convert nucleotide base into integer
     static int nidx(char c) {
@@ -168,7 +168,7 @@ public:
 
     // call missing
     bool missing_call(const Genotype& g) {
-        return g.first == '-' && g.second == '.';
+        return g.first == '-' && (g.second == '.' || g.second == '-');
     }
 
     // call is reference
