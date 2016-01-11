@@ -410,7 +410,7 @@ void Caller::write_text_calls(const NodePileup& pileup) {
   int n = _node->sequence().length();
   const string& seq = _node->sequence();
 
-  char* cat[3] = {"MISSING", "REF", "SNP"};
+  const string cat[3] = {"MISSING", "REF", "SNP"};
   
   for (int i = 0; i < n; ++i) {
       
