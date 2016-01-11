@@ -68,6 +68,7 @@ void Caller::call_node_pileup(const NodePileup& pileup) {
 
     _node = _graph->get_node(pileup.node_id());
     assert(_node != NULL);
+    assert(_node->sequence().length() == pileup.base_pileup_size());
     
     _node_calls.clear();
     char def_char = _leave_uncalled ? '.' : '-';
@@ -408,10 +409,13 @@ void Caller::create_snp_path(int64_t snp_node, bool secondary_snp) {
 void Caller::write_text_calls(const NodePileup& pileup) {
   
   int n = _node->sequence().length();
+  assert (_node_calls.size() >= n);
+  assert (pileup.node_id() == _node->id());
+  assert (pileup.base_pileup_size() >= n);
   const string& seq = _node->sequence();
 
   const string cat[3] = {"MISSING", "REF", "SNP"};
-  
+
   for (int i = 0; i < n; ++i) {
       
     // use 1-based coordinates like vcf

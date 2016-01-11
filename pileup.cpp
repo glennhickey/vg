@@ -76,7 +76,7 @@ void Pileups::compute_from_alignment(VG& graph, Alignment& alignment) {
         const Mapping& mapping = path.mapping(i);
         if (graph.has_node(mapping.position().node_id())) {
             const Node* node = graph.get_node(mapping.position().node_id());
-            NodePileup* pileup = get_create(node->id());
+            NodePileup* pileup = get_create(node);
             int64_t node_offset = mapping.position().offset();
             for (int j = 0; j < mapping.edit_size(); ++j) {
                 const Edit& edit = mapping.edit(j);

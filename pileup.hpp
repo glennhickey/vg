@@ -82,12 +82,17 @@ public:
     }
         
     // get a pileup.  if it's null, create a new one and insert it.
-    NodePileup* get_create(int64_t node_id) {
-        NodePileup* p = get(node_id);
+    NodePileup* get_create(const Node* node) {
+      NodePileup* p = get(node->id());
         if (p == NULL) {
             p = new NodePileup();
-            p->set_node_id(node_id);
-            _pileups[node_id] = p;
+            p->set_node_id(node->id());
+            for (int i = 0; i < node->sequence().length(); ++i) {
+                BasePileup* b = p->add_base_pileup();
+                b->set_num_bases(0);
+                b->set_ref_base((int)node->sequence()[i]);
+            }
+            _pileups[node->id()] = p;
         }
         return p;
     }   
