@@ -14,8 +14,8 @@ const double Caller::Log_zero = (double)-1e100;
 const double Caller::Default_het_prior = 0.001; // from MAQ
 const int Caller::Default_min_depth = 20;
 const int Caller::Default_max_depth = 5000;
-const int Caller::Default_min_support = 20;
-const double Caller::Default_min_frac = 0.75;
+const int Caller::Default_min_support = 10;
+const double Caller::Default_min_frac = 0.33;
 const double Caller::Default_min_likelihood = 1e-50;
 const char Caller::Default_default_quality = 30;
 
@@ -167,28 +167,26 @@ void Caller::call_base_pileup(const NodePileup& np, int64_t offset) {
     // note first and second base will be upper case too
     char ref_base = ::toupper(bp.ref_base());
 
-    // test against thresholding heuristics
-    if ((double)(top_count + second_count) / (double)base_offsets.size() >= _min_frac) {
+    // compute threshold
+    int min_support = max(int(_min_frac * (double)bp.num_bases()), _min_support);
 
-        // compute max likelihood snp genotype.  it will be one of the three combinations
-        // of the top two bases (we don't care about case here)
-        pair<char, char> g = mp_snp_genotype(bp, base_offsets, top_base, second_base);
+    // compute max likelihood snp genotype.  it will be one of the three combinations
+    // of the top two bases (we don't care about case here)
+    pair<char, char> g = mp_snp_genotype(bp, base_offsets, top_base, second_base);
 
-
-        // update the node calls
-        if (top_count >= _min_support) {
-            if (g.first != ref_base) {
-                _node_calls[offset].first = g.first;
-            } else {
-                _node_calls[offset].first = '.';
-            }
-        }
-        if (second_count >= _min_support) {
-            if (g.second != ref_base && g.second != g.first) {
-                _node_calls[offset].second = g.second;
-            } else {
-                _node_calls[offset].second = '.';
-            }
+    // update the node calls
+    if (top_count >= min_support) {
+      if (g.first != ref_base) {
+          _node_calls[offset].first = g.first;
+      } else {
+          _node_calls[offset].first = '.';
+      }
+    }
+    if (second_count >= min_support) {
+        if (g.second != ref_base && g.second != g.first) {
+            _node_calls[offset].second = g.second;
+        } else {
+            _node_calls[offset].second = '.';
         }
     }
 }

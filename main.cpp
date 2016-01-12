@@ -267,6 +267,7 @@ void help_call(char** argv) {
          << "    -d, --min_depth         minimum depth of pileup (default=" << Caller::Default_min_depth <<")" << endl
          << "    -e, --max_depth         maximum depth of pileup (default=" << Caller::Default_max_depth <<")" << endl
          << "    -s, --min_support       minimum number of reads required to support snp (default=" << Caller::Default_min_support <<")" << endl
+         << "    -f, --min_frac          minimum percentage of reads required to support snp(default=" << Caller::Default_min_frac <<")" << endl
          << "    -r, --het_prior         prior for heterozygous genotype (default=" << Caller::Default_het_prior <<")" << endl
          << "    -q, --default_read_qual phred quality score to use if none found in the pileup (default="
          << (int)Caller::Default_default_quality << ")" << endl
@@ -288,6 +289,7 @@ int main_call(int argc, char** argv) {
     int min_depth = Caller::Default_min_depth;
     int max_depth = Caller::Default_max_depth;
     int min_support = Caller::Default_min_support;
+    double min_frac = Caller::Default_min_frac;
     int default_read_qual = Caller::Default_default_quality;
     bool leave_uncalled = false;
     string calls_file;
@@ -303,6 +305,7 @@ int main_call(int argc, char** argv) {
                 {"min_depth", required_argument, 0, 'd'},
                 {"max_depth", required_argument, 0, 'e'},
                 {"min_support", required_argument, 0, 's'},
+                {"min_frac", required_argument, 0, 'f'},
                 {"default_read_qual", required_argument, 0, 'q'},
                 {"leave_uncalled", no_argument, 0, 'l'},
                 {"calls", required_argument, 0, 'c'},
@@ -332,6 +335,9 @@ int main_call(int argc, char** argv) {
         case 's':
             min_support = atoi(optarg);
             break;
+        case 'f':
+            min_frac = atof(optarg);
+            break;            
         case 'q':
             default_read_qual = atoi(optarg);
             break;
@@ -426,7 +432,7 @@ int main_call(int argc, char** argv) {
     }
     Caller caller(graph,
                   het_prior, min_depth, max_depth, min_support,
-                  Caller::Default_min_frac, Caller::Default_min_likelihood,
+                  min_frac, Caller::Default_min_likelihood,
                   leave_uncalled, default_read_qual, text_file_stream);
 
     function<void(NodePileup&)> lambda = [&caller](NodePileup& pileup) {

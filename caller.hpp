@@ -34,7 +34,7 @@ public:
     static const int Default_max_depth;
     // minimum number of reads that support snp required to call it
     static const int Default_min_support;
-    // minimum pct of pileup that's not indels to call snp
+    // same as min_support, but as fraction of total depth
     static const double Default_min_frac;
     // minimum likelihood to call a snp
     static const double Default_min_likelihood;
