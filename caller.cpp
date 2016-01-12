@@ -217,10 +217,14 @@ void Caller::compute_top_frequencies(const BasePileup& bp,
     // break ties with reference
     int refidx = nidx(bp.ref_base());
     if (hist[first] == hist[refidx]) {
+        if (second == refidx) {
+            second = first;
+        }
         first = refidx;
     } else if (hist[second] == hist[refidx]) {
         second = refidx;
     }
+    assert(first != second);
 
     top_base = idxn(first);
     top_count = hist[first];
@@ -273,9 +277,10 @@ pair<char, char> Caller::mp_snp_genotype(const BasePileup& bp,
 double Caller::genotype_log_likelihood(const BasePileup& bp,
                                        const vector<pair<int, int> >& base_offsets,
                                        double g, char first, char second) {
-    double m = 2.; // always assume two alleles
+    double m = 2.; // ploidy. always assume two alleles
+    double k = (double)base_offsets.size(); // depth
 
-    double log_likelihood = log(0.25); // 1 / m^2, where m = ploidy = 2;
+    double log_likelihood = -k * log(m); // 1 / m^k
 
     const string& bases = bp.bases();
     const string& quals = bp.qualities();
