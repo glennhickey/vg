@@ -505,7 +505,7 @@ int main_pileup(int argc, char** argv) {
             };
 
         int option_index = 0;
-        c = getopt_long (argc, argv, "jpst:",
+        c = getopt_long (argc, argv, "jpsa:b:t:",
                          long_options, &option_index);
 
         /* Detect the end of the options. */
