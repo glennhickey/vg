@@ -465,10 +465,15 @@ void help_pileup(char** argv) {
          << "Calculate pileup for each position in graph and output in VG Pileup format (list of protobuf NodePileups)." << endl
          << endl
          << "options:" << endl
-         << "    -j, --json           output in JSON" << endl
-         << "    -p, --progress       show progress" << endl
-         << "    -s, --skip-secondary ignore secondary alignments" << endl
-         << "    -t, --threads N      number of threads to use" << endl;
+         << "    -j, --json              output in JSON" << endl
+         << "    -p, --progress          show progress" << endl
+         << "    -s, --skip-secondary    ignore secondary alignments" << endl
+         << "    -a, --primary-score N   minimum score for primary alignment"
+         << " to be considered (0 <= N <= 1).  Will be compared to alignment_score"
+         << " / (2 * read_length)." << endl
+         << "    -b, --secondary-score N as above, but for secondary alignments" << endl
+         << "    -t, --threads N         number of threads to use" << endl;
+                    
 }
 
 int main_pileup(int argc, char** argv) {
@@ -481,6 +486,8 @@ int main_pileup(int argc, char** argv) {
     bool output_json = false;
     bool show_progress = false;
     bool skip_secondary = false;
+    double primary_score = 0.;
+    double secondary_score = 0.;
     int thread_count = 1;
 
     int c;
@@ -491,6 +498,8 @@ int main_pileup(int argc, char** argv) {
                 {"json", required_argument, 0, 'j'},
                 {"progress", required_argument, 0, 'p'},
                 {"skip-secondary", required_argument, 0, 's'},
+                {"primary-score", required_argument, 0, 'a'},
+                {"secondary-score", required_argument, 0, 'b'},
                 {"threads", required_argument, 0, 't'},
                 {0, 0, 0, 0}
             };
@@ -512,7 +521,13 @@ int main_pileup(int argc, char** argv) {
             show_progress = true;
             break;
         case 's':
-          skip_secondary = true;
+            skip_secondary = true;
+            break;
+        case 'a':
+            primary_score = atof(optarg);
+            break;
+        case 'b':
+            secondary_score = atof(optarg);
             break;
         case 't':
             thread_count = atoi(optarg);
@@ -573,8 +588,17 @@ int main_pileup(int argc, char** argv) {
         cerr << "Computing pileups" << endl;
     }
     vector<Pileups> pileups(thread_count);
-    function<void(Alignment&)> lambda = [&pileups, &graph, &skip_secondary](Alignment& aln) {
-        if (!skip_secondary || !aln.is_secondary()) {
+    function<void(Alignment&)> lambda = [&pileups, &graph, &skip_secondary,
+                                         &primary_score, &secondary_score](Alignment& aln) {
+        bool skip = false;
+        // apply score filters.  a perfect alignment score is 2 * the length. 
+        double score = (double)aln.score() / (double)(2 * aln.sequence().length());
+        if (aln.is_secondary()) {
+            skip = skip_secondary || score < secondary_score;
+        } else {
+            skip = score < primary_score;
+        }
+        if (!skip) {   
             int tid = omp_get_thread_num();
             pileups[tid].compute_from_alignment(*graph, aln);
         }
