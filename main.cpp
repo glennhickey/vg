@@ -176,7 +176,9 @@ int main_filter(int argc, char** argv) {
     // logic above won't write last element of stream if it's not primary
     if (buffer.size() > 0) {
         assert (buffer.size() == 1 && prev_primary == true);
-        stream::write(cout, buffer.size(), write_buffer);
+        if (keep_prev == true) {
+            stream::write(cout, buffer.size(), write_buffer);
+        }
         buffer.clear();
     }
     
