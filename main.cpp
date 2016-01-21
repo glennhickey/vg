@@ -25,6 +25,165 @@ using namespace std;
 using namespace google::protobuf;
 using namespace vg;
 
+void help_filter(char** argv) {
+    cerr << "usage: " << argv[0] << " filter [options] <alignment.gam> > out.gam" << endl
+         << "Filter low-scoring alignments using different heuristics." << endl
+         << endl
+         << "options:" << endl
+         << "    -s, --min-secondary N   minimum score to keep secondary alignment [default=0]" << endl
+         << "    -r, --min-primary N     minimum score to keep primary alignment [default=0]" << endl
+         << "    -d, --max-sec-delta N   maximum (primary - secondary) score delta to keep secondary alignment [default=1e20]" << endl
+         << "    -e, --min-delta N       minimum (primary - secondary) score delta to keep both primary and secondary alignments [default=0]" << endl
+         << "    -f, --frac-score        use Alignment.score / ( 2 * length) for thresholds instead of absolute score (default)" << endl;
+}
+
+int main_filter(int argc, char** argv) {
+
+    if (argc <= 2) {
+        help_filter(argv);
+        return 1;
+    }
+
+    double min_secondary = 0.;
+    double min_primary = 0.;
+    double max_sec_delta = 1e20;
+    double min_delta = 0.;
+    bool frac_score = false;
+
+    int c;
+    optind = 2; // force optind past command positional arguments
+    while (true) {
+        static struct option long_options[] =
+            {
+                {"min-secondary", required_argument, 0, 's'},
+                {"min-primary", required_argument, 0, 'r'},
+                {"max-sec-delta", required_argument, 0, 'd'},
+                {"min-delta", required_argument, 0, 'e'},
+                {"frac-score", required_argument, 0, 'f'},
+                {0, 0, 0, 0}
+            };
+
+        int option_index = 0;
+        c = getopt_long (argc, argv, "s:r:d:e:f",
+                         long_options, &option_index);
+
+        /* Detect the end of the options. */
+        if (c == -1)
+            break;
+
+        switch (c)
+        {
+        case 's':
+            min_secondary = atof(optarg);
+            break;
+        case 'r':
+            min_primary = atof(optarg);
+            break;
+        case 'd':
+            max_sec_delta = atof(optarg);
+            break;
+        case 'e':
+            min_delta = atof(optarg);
+            break;
+        case 'f':
+            frac_score = true;
+            break;
+        case 'h':
+        case '?':
+            /* getopt_long already printed an error message. */
+            help_filter(argv);
+            exit(1);
+            break;
+
+        default:
+            abort ();
+        }
+    }
+    
+    // setup alignment stream
+    string alignments_file_name = argv[optind++];
+    istream* alignment_stream = NULL;
+    ifstream in;
+    if (alignments_file_name == "-") {
+        alignment_stream = &std::cin;
+    } else {
+        in.open(alignments_file_name);
+        if (!in) {
+            cerr << "error: input file " << alignments_file_name << " not found." << endl;
+            exit(1);
+        }
+        alignment_stream = &in;
+    }
+
+    // buffered output
+    vector<Alignment> buffer;
+    static const int buffer_size = 1000; // we let this be off by 1
+    function<Alignment&(uint64_t)> write_buffer = [&buffer](uint64_t i) -> Alignment& {
+        return buffer[i];
+    };
+    
+    // for deltas, we keep track of last primary
+    bool prev_primary = false;
+    bool keep_prev = true;
+    double prev_score = -1.;
+
+    // we assume that every primary alignment has 0 or 1 secondary alignment
+    // immediately following in the stream
+    function<void(Alignment&)> lambda = [&](Alignment& aln) {
+        bool keep = true;
+        double score =  (double)aln.score();
+        // toggle absolute or fractional score
+        if (frac_score == true) {
+            if (aln.sequence().length() > 0) {
+                score /= (double)(2 * aln.sequence().length());
+            } else {
+                assert(score == 0);
+            }
+        }
+        if (aln.is_secondary()) {
+            assert(prev_primary && aln.name() == buffer.back().name());
+            double delta = prev_score - score;
+            // filter (current) secondary
+            keep = score >= min_secondary && delta <= max_sec_delta && delta >= min_delta;
+            // filter (last) primary
+            keep_prev = keep_prev && delta >= min_delta;
+
+            // add to write buffer
+            if (!keep_prev) {
+                buffer.pop_back();
+            }
+            if (keep) {
+                buffer.push_back(aln);
+            }
+            if (buffer.size() >= buffer_size) {
+                 stream::write(cout, buffer.size(), write_buffer);
+                 buffer.clear();
+            }
+
+            // forget last primary
+            prev_primary = false;
+            prev_score = -1;
+            keep_prev = false;
+            
+        } else {
+            prev_primary = true;
+            prev_score = score;
+            keep_prev = score >= min_primary;
+            buffer.push_back(aln);
+        }
+    };
+
+    // logic above won't write last element of stream if it's not primary
+    if (buffer.size() > 0) {
+        assert (buffer.size() == 1 && prev_primary == true);
+        stream::write(cout, buffer.size(), write_buffer);
+        buffer.clear();
+    }
+    
+    stream::for_each(*alignment_stream, lambda);
+    return 0;
+}
+
 void help_validate(char** argv) {
     cerr << "usage: " << argv[0] << " validate [options] graph" << endl
          << "Validate the graph." << endl
@@ -467,13 +626,7 @@ void help_pileup(char** argv) {
          << "options:" << endl
          << "    -j, --json              output in JSON" << endl
          << "    -p, --progress          show progress" << endl
-         << "    -s, --skip-secondary    ignore secondary alignments" << endl
-         << "    -a, --primary-score N   minimum score for primary alignment"
-         << " to be considered (0 <= N <= 1).  Will be compared to alignment_score"
-         << " / (2 * read_length)." << endl
-         << "    -b, --secondary-score N as above, but for secondary alignments" << endl
-         << "    -t, --threads N         number of threads to use" << endl;
-                    
+         << "    -t, --threads N         number of threads to use" << endl;                    
 }
 
 int main_pileup(int argc, char** argv) {
@@ -485,9 +638,6 @@ int main_pileup(int argc, char** argv) {
 
     bool output_json = false;
     bool show_progress = false;
-    bool skip_secondary = false;
-    double primary_score = 0.;
-    double secondary_score = 0.;
     int thread_count = 1;
 
     int c;
@@ -497,15 +647,12 @@ int main_pileup(int argc, char** argv) {
             {
                 {"json", required_argument, 0, 'j'},
                 {"progress", required_argument, 0, 'p'},
-                {"skip-secondary", required_argument, 0, 's'},
-                {"primary-score", required_argument, 0, 'a'},
-                {"secondary-score", required_argument, 0, 'b'},
                 {"threads", required_argument, 0, 't'},
                 {0, 0, 0, 0}
             };
 
         int option_index = 0;
-        c = getopt_long (argc, argv, "jpsa:b:t:",
+        c = getopt_long (argc, argv, "jpt:",
                          long_options, &option_index);
 
         /* Detect the end of the options. */
@@ -519,15 +666,6 @@ int main_pileup(int argc, char** argv) {
             break;
         case 'p':
             show_progress = true;
-            break;
-        case 's':
-            skip_secondary = true;
-            break;
-        case 'a':
-            primary_score = atof(optarg);
-            break;
-        case 'b':
-            secondary_score = atof(optarg);
             break;
         case 't':
             thread_count = atoi(optarg);
@@ -577,7 +715,7 @@ int main_pileup(int argc, char** argv) {
     } else {
         in.open(alignments_file_name);
         if (!in) {
-            cerr << "error: input file " << graph_file_name << " not found." << endl;
+            cerr << "error: input file " << alignments_file_name << " not found." << endl;
             exit(1);
         }
         alignment_stream = &in;
@@ -588,20 +726,9 @@ int main_pileup(int argc, char** argv) {
         cerr << "Computing pileups" << endl;
     }
     vector<Pileups> pileups(thread_count);
-    function<void(Alignment&)> lambda = [&pileups, &graph, &skip_secondary,
-                                         &primary_score, &secondary_score](Alignment& aln) {
-        bool skip = false;
-        // apply score filters.  a perfect alignment score is 2 * the length. 
-        double score = (double)aln.score() / (double)(2 * aln.sequence().length());
-        if (aln.is_secondary()) {
-            skip = skip_secondary || score < secondary_score;
-        } else {
-            skip = score < primary_score;
-        }
-        if (!skip) {   
-            int tid = omp_get_thread_num();
-            pileups[tid].compute_from_alignment(*graph, aln);
-        }
+    function<void(Alignment&)> lambda = [&pileups, &graph](Alignment& aln) {
+        int tid = omp_get_thread_num();
+        pileups[tid].compute_from_alignment(*graph, aln);
     };
     stream::for_each_parallel(*alignment_stream, lambda);
 
@@ -4935,7 +5062,10 @@ int main(int argc, char *argv[])
         return main_compare(argc, argv);
     } else if (command == "validate") {
         return main_validate(argc, argv);
+    } else if (command == "filter") {
+        return main_filter(argc, argv);
     } else {
+
         cerr << "error:[vg] command " << command << " not found" << endl;
         vg_help(argv);
         return 1;
