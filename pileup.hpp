@@ -20,10 +20,10 @@ using namespace std;
 class Pileups {
 public:
     
-    Pileups() {}
-
-    // from protobuf stream
-    Pileups(istream& in, bool showp = false);
+    Pileups(int min_quality = 0, int max_mismatches = 1, int window_size = 0) :
+        _min_quality(min_quality),
+        _max_mismatches(max_mismatches),
+        _window_size(window_size) {}
     
     // copy constructor
     Pileups(const Pileups& other) {
@@ -31,6 +31,9 @@ public:
             for (auto& p : other._pileups) {
                 insert(new NodePileup(*p.second));
             }
+            _min_quality = other._min_quality;
+            _max_mismatches = other._max_mismatches;
+            _window_size = other._window_size;
         }
     }
 
@@ -38,6 +41,9 @@ public:
     Pileups(Pileups&& other) noexcept {
         _pileups = other._pileups;
         other._pileups.clear();
+        _min_quality = other._min_quality;
+        _max_mismatches = other._max_mismatches;
+        _window_size = other._window_size;
     }
 
     // copy assignment operator
@@ -51,6 +57,9 @@ public:
     Pileups& operator=(Pileups&& other) noexcept {
         swap(_pileups, other._pileups);
         other._pileups.clear();
+        _min_quality = other._min_quality;
+        _max_mismatches = other._max_mismatches;
+        _window_size = other._window_size;
         return *this;
     }
 
@@ -64,6 +73,12 @@ public:
     
     // This maps from Position to Pileup.
     PileupHash _pileups;
+    // Ignore bases with quality less than this
+    int _min_quality;
+    // max mismatches within window_size
+    int _max_mismatches;
+    // number of bases to scan in each direction for mismatches
+    int _window_size;
 
     // write to JSON
     void to_json(ostream& out);
@@ -108,7 +123,17 @@ public:
     // query stores the current position (and nothing else).  
     void compute_from_edit(NodePileup& pileup, int64_t& node_offset, int64_t& read_offset,
                            const Node& node, const Alignment& alignment,
-                           const Mapping& mapping, const Edit& edit);
+                           const Mapping& mapping, const Edit& edit,
+                           const vector<int>& mismatch_counts);
+
+    // do one pass to count all mismatches in read, so we can do
+    // mismatch filter efficiently in 2nd path.
+    // mismatches[i] stores number of mismatches in range (0, i)
+    void count_mismatches(VG& graph, const Path& path, vector<int>& mismatches) const;
+
+    // check base quality as well as miss match filter
+    bool pass_filter(const Alignment& alignment, int read_offset,
+                     const vector<int>& mismatches) const;
             
     // move all entries in other object into this one.
     // if two positions collide, they are merged.

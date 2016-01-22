@@ -12,10 +12,10 @@ const double Caller::Log_zero = (double)-1e100;
 
 // these values pretty arbitrary at this point
 const double Caller::Default_het_prior = 0.001; // from MAQ
-const int Caller::Default_min_depth = 20;
-const int Caller::Default_max_depth = 5000;
-const int Caller::Default_min_support = 10;
-const double Caller::Default_min_frac = 0.33;
+const int Caller::Default_min_depth = 10;
+const int Caller::Default_max_depth = 200;
+const int Caller::Default_min_support = 1;
+const double Caller::Default_min_frac = 0.25;
 const double Caller::Default_min_likelihood = 1e-50;
 const char Caller::Default_default_quality = 30;
 
@@ -50,6 +50,7 @@ Caller::~Caller() {
 
 void Caller::clear() {
     _node_calls.clear();
+    _node_likelihoods.clear();
     _call_graph = VG();
     _start_node_map.clear();
     _end_node_map.clear();
@@ -73,6 +74,8 @@ void Caller::call_node_pileup(const NodePileup& pileup) {
     _node_calls.clear();
     char def_char = _leave_uncalled ? '.' : '-';
     _node_calls.assign(_node->sequence().length(), Genotype(def_char, def_char));
+    _node_likelihoods.clear();
+    _node_likelihoods.assign(_node->sequence().length(), safe_log(0));
 
     // todo: parallelize this loop
     // process each base in pileup individually
@@ -172,21 +175,24 @@ void Caller::call_base_pileup(const NodePileup& np, int64_t offset) {
 
     // compute max likelihood snp genotype.  it will be one of the three combinations
     // of the top two bases (we don't care about case here)
-    pair<char, char> g = mp_snp_genotype(bp, base_offsets, top_base, second_base);
+    pair<char, char> g;
+    _node_likelihoods[offset] = mp_snp_genotype(bp, base_offsets, top_base, second_base, g);
 
-    // update the node calls
-    if (top_count >= min_support) {
-      if (g.first != ref_base) {
-          _node_calls[offset].first = g.first;
-      } else {
-          _node_calls[offset].first = '.';
-      }
-    }
-    if (second_count >= min_support) {
-        if (g.second != ref_base && g.second != g.first) {
-            _node_calls[offset].second = g.second;
-        } else {
-            _node_calls[offset].second = '.';
+    if (_node_likelihoods[offset] >= _min_log_likelihood) {
+        // update the node calls
+        if (top_count >= min_support) {
+            if (g.first != ref_base) {
+                _node_calls[offset].first = g.first;
+            } else {
+                _node_calls[offset].first = '.';
+            }
+        }
+        if (second_count >= min_support) {
+            if (g.second != ref_base && g.second != g.first) {
+                _node_calls[offset].second = g.second;
+            } else {
+                _node_calls[offset].second = '.';
+            }
         }
     }
 }
@@ -231,28 +237,23 @@ void Caller::compute_top_frequencies(const BasePileup& bp,
 }
 
 // Estimate the most probable snp genotype
-pair<char, char> Caller::mp_snp_genotype(const BasePileup& bp,
-                                         const vector<pair<int, int> >& base_offsets,
-                                         char top_base, char second_base) {
-    char ref_base = ::toupper(bp.ref_base());
-
-    // gotta do better than this:
-    pair<char, char> mp_genotype(ref_base, ref_base);
-    double mp = _min_log_likelihood + _hom_log_prior;
+double Caller::mp_snp_genotype(const BasePileup& bp,
+                               const vector<pair<int, int> >& base_offsets,
+                               char top_base, char second_base,
+                               Genotype& mp_genotype) {
 
     // genotype with 0 top_bases
     double gl = genotype_log_likelihood(bp, base_offsets, 0, top_base, second_base);
-    double p = _hom_log_prior + gl;
-    if (p > mp) {
-        mp = p;
-        mp_genotype = make_pair(second_base, second_base);
-    }
+    double mp = _hom_log_prior + gl;
+    double ml = gl;
+    mp_genotype = make_pair(second_base, second_base);
 
     // genotype with 1 top_base
     gl = genotype_log_likelihood(bp, base_offsets, 1, top_base, second_base);
-    p = _het_log_prior + gl;
+    double p = _het_log_prior + gl;
     if (p > mp) {
         mp = p;
+        ml = gl;
         mp_genotype = make_pair(top_base, second_base);
     }
 
@@ -261,12 +262,11 @@ pair<char, char> Caller::mp_snp_genotype(const BasePileup& bp,
     p = _hom_log_prior + gl;
     if (p > mp) {
         mp = p;
+        ml = gl;
         mp_genotype = make_pair(top_base, top_base);
     }
-    
-    // note, we're throwing away the probabilty value (mp) here.
-    // should figure out where to stick it in the output. 
-    return mp_genotype;
+
+    return ml;
 }
 
 // This is Equation 2 (tranformed to log) from
@@ -429,6 +429,8 @@ void Caller::write_text_calls(const NodePileup& pileup) {
                  << _node_calls[i].first << "," << _node_calls[i].second << "\t"
         // category
                  << cat[call_cat(_node_calls[i])] << "\t"
+        // likelihood
+                 << _node_likelihoods[i] << "\t"
         // pileup for debugging
                  << pileup.base_pileup(i).bases() << "\n";
   }  

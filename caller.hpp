@@ -66,6 +66,7 @@ public:
     // - = missing
     typedef pair<char, char> Genotype;
     vector<Genotype> _node_calls;
+    vector<double> _node_likelihoods;
     // buffer for current node;
     const Node* _node;
     // max id in call_graph
@@ -118,9 +119,9 @@ public:
                                  char& second_base, int& second_count);
     
     // compute genotype for a position with maximum prob
-    Genotype mp_snp_genotype(const BasePileup& bp,
-                             const vector<pair<int, int> >& base_offsets,
-                             char top_base, char second_base);
+    double mp_snp_genotype(const BasePileup& bp,
+                           const vector<pair<int, int> >& base_offsets,
+                           char top_base, char second_base, Genotype& mp_genotype);
     // compute likelihood of a genotype samtools-style
     double genotype_log_likelihood(const BasePileup& pb,
                                    const vector<pair<int, int> >& base_offsets,
