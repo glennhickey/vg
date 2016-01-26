@@ -211,7 +211,8 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
 }
 
 void Pileups::count_mismatches(VG& graph, const Path& path,
-                               vector<int>& mismatches) const
+                               vector<int>& mismatches,
+                               bool skipIndels)
 {
     mismatches.clear();
     int64_t read_offset = 0;
@@ -245,19 +246,23 @@ void Pileups::count_mismatches(VG& graph, const Path& path,
                 }
                 // ***** INSERT *****
                 else if (edit.from_length() < edit.to_length()) {
-                    mismatches.push_back(1);
-                    for (int x = 1; x < edit.to_length(); ++x) {
-                        mismatches.push_back(0);
+                    if (skipIndels == false) {
+                        mismatches.push_back(1);
+                        for (int x = 1; x < edit.to_length(); ++x) {
+                            mismatches.push_back(0);
+                        }
                     }
                     // move right along read (and stay put on reference)
                     read_offset += edit.to_length();
                 }
                 // ***** DELETE *****
                 else {
-                    // since we're working in read coordinates, we count
-                    // a single mismatch right before the delete.
-                    if (mismatches.size() > 0) {
-                        mismatches[mismatches.size() - 1] = 1;
+                    if (skipIndels == false) {
+                        // since we're working in read coordinates, we count
+                        // a single mismatch right before the delete.
+                        if (mismatches.size() > 0) {
+                            mismatches[mismatches.size() - 1] = 1;
+                        }
                     }
                     int64_t delta = is_reverse ? -edit.from_length() : edit.from_length();
                     // stay put on read, move left/right depending on strand on reference
@@ -266,7 +271,7 @@ void Pileups::count_mismatches(VG& graph, const Path& path,
             }
         }
     }
-    assert(read_offset == mismatches.size());
+    assert(skipIndels || read_offset == mismatches.size());
     // too lazy to do full count inline.  sum up here
     int count = 0;
     for (int i = 0; i < mismatches.size(); ++i) {

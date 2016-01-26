@@ -129,7 +129,8 @@ public:
     // do one pass to count all mismatches in read, so we can do
     // mismatch filter efficiently in 2nd path.
     // mismatches[i] stores number of mismatches in range (0, i)
-    void count_mismatches(VG& graph, const Path& path, vector<int>& mismatches) const;
+    static void count_mismatches(VG& graph, const Path& path, vector<int>& mismatches,
+                                 bool skipIndels = false);
 
     // check base quality as well as miss match filter
     bool pass_filter(const Alignment& alignment, int read_offset,

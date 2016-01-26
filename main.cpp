@@ -26,29 +26,33 @@ using namespace google::protobuf;
 using namespace vg;
 
 void help_filter(char** argv) {
-    cerr << "usage: " << argv[0] << " filter [options] <alignment.gam> > out.gam" << endl
+    cerr << "usage: " << argv[0] << " filter [options] <graph.vg> <alignment.gam> > out.gam" << endl
          << "Filter low-scoring alignments using different heuristics." << endl
          << endl
          << "options:" << endl
          << "    -s, --min-secondary N   minimum score to keep secondary alignment [default=0]" << endl
          << "    -r, --min-primary N     minimum score to keep primary alignment [default=0]" << endl
-         << "    -d, --max-sec-delta N   maximum (primary - secondary) score delta to keep secondary alignment [default=1e20]" << endl
-         << "    -e, --min-delta N       minimum (primary - secondary) score delta to keep both primary and secondary alignments [default=0]" << endl
-         << "    -f, --frac-score        use Alignment.score / ( 2 * length) for thresholds instead of absolute score (default)" << endl;
+         << "    -d, --min-sec-delta N   mininum (primary - secondary) score delta to keep secondary alignment [default=0]" << endl
+         << "    -e, --min-pri-delta N   minimum (primary - secondary) score delta to keep primary alignment [default=0]" << endl
+         << "    -f, --frac-score        normalize score based on length" << endl
+         << "    -a, --frac-delta        use (secondary / primary) for delta comparisons" << endl
+         << "    -u, --substitutions     use substitution count instead of score" << endl;
 }
 
 int main_filter(int argc, char** argv) {
 
-    if (argc <= 2) {
+    if (argc <= 3) {
         help_filter(argv);
         return 1;
     }
 
     double min_secondary = 0.;
     double min_primary = 0.;
-    double max_sec_delta = 1e20;
-    double min_delta = 0.;
+    double min_sec_delta = 0.;
+    double min_pri_delta = 0.;
     bool frac_score = false;
+    bool frac_delta = false;
+    bool sub_score = false;
 
     int c;
     optind = 2; // force optind past command positional arguments
@@ -57,14 +61,16 @@ int main_filter(int argc, char** argv) {
             {
                 {"min-secondary", required_argument, 0, 's'},
                 {"min-primary", required_argument, 0, 'r'},
-                {"max-sec-delta", required_argument, 0, 'd'},
-                {"min-delta", required_argument, 0, 'e'},
+                {"min-sec-delta", required_argument, 0, 'd'},
+                {"min-pri-delta", required_argument, 0, 'e'},
                 {"frac-score", required_argument, 0, 'f'},
+                {"frac-delta", required_argument, 0, 'a'}, 
+                {"substitutions", required_argument, 0, 'u'},
                 {0, 0, 0, 0}
             };
 
         int option_index = 0;
-        c = getopt_long (argc, argv, "s:r:d:e:f",
+        c = getopt_long (argc, argv, "s:r:d:e:fau",
                          long_options, &option_index);
 
         /* Detect the end of the options. */
@@ -80,13 +86,19 @@ int main_filter(int argc, char** argv) {
             min_primary = atof(optarg);
             break;
         case 'd':
-            max_sec_delta = atof(optarg);
+            min_sec_delta = atof(optarg);
             break;
         case 'e':
-            min_delta = atof(optarg);
+            min_pri_delta = atof(optarg);
             break;
         case 'f':
             frac_score = true;
+            break;
+        case 'a':
+            frac_delta = true;
+            break;
+        case 'u':
+            sub_score = true;
             break;
         case 'h':
         case '?':
@@ -99,12 +111,31 @@ int main_filter(int argc, char** argv) {
             abort ();
         }
     }
-    
+
+    // read the graph
+    VG* graph;
+    string graph_file_name = argv[optind++];
+    if (graph_file_name == "-") {
+        graph = new VG(std::cin);
+    } else {
+        ifstream in;
+        in.open(graph_file_name.c_str());
+        if (!in) {
+            cerr << "error: input file " << graph_file_name << " not found." << endl;
+            exit(1);
+        }
+        graph = new VG(in);
+    }
+
     // setup alignment stream
     string alignments_file_name = argv[optind++];
     istream* alignment_stream = NULL;
     ifstream in;
     if (alignments_file_name == "-") {
+        if (graph_file_name == "-") {
+            cerr << "error: graph and alignments can't both be from stdin." << endl;
+            exit(1);
+        }
         alignment_stream = &std::cin;
     } else {
         in.open(alignments_file_name);
@@ -131,22 +162,35 @@ int main_filter(int argc, char** argv) {
     // immediately following in the stream
     function<void(Alignment&)> lambda = [&](Alignment& aln) {
         bool keep = true;
-        double score =  (double)aln.score();
+        double score = (double)aln.score();
+        double denom = 2. * aln.sequence().length();
+        // toggle substitution score
+        if (sub_score == true) {
+            vector<int> mismatches;
+            Pileups::count_mismatches(*graph, aln.path(), mismatches, true);
+            denom = mismatches.size();
+            score = denom > 0 ? mismatches.size() - mismatches.back() : 0.;
+            assert(score <= denom);
+        }
         // toggle absolute or fractional score
         if (frac_score == true) {
-            if (aln.sequence().length() > 0) {
-                score /= (double)(2 * aln.sequence().length());
-            } else {
-                assert(score == 0);
+            if (denom > 0.) {
+                score /= denom;
+            }
+            else {
+                assert(score == 0.);
             }
         }
         if (aln.is_secondary()) {
             assert(prev_primary && aln.name() == buffer.back().name());
             double delta = prev_score - score;
+            if (frac_delta == true) {
+                delta = prev_score > 0 ? score / prev_score : 0.;
+            }
             // filter (current) secondary
-            keep = score >= min_secondary && delta <= max_sec_delta && delta >= min_delta;
+            keep = score >= min_secondary && delta >= min_sec_delta;
             // filter (last) primary
-            keep_prev = keep_prev && delta >= min_delta;
+            keep_prev = keep_prev && delta >= min_pri_delta;
 
             // add to write buffer
             if (!keep_prev) {
@@ -183,6 +227,7 @@ int main_filter(int argc, char** argv) {
     }
     
     stream::for_each(*alignment_stream, lambda);
+    delete graph;
     return 0;
 }
 
