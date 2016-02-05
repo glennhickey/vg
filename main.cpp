@@ -498,6 +498,7 @@ void help_call(char** argv) {
          << "    -f, --min_frac          minimum percentage of reads required to support snp(default=" << Caller::Default_min_frac <<")" << endl
          << "    -r, --het_prior         prior for heterozygous genotype (default=" << Caller::Default_het_prior <<")" << endl
          << "    -q, --default_read_qual phred quality score to use if none found in the pileup (default="
+         << "    -b, --max_strand_bias N limit to absolute difference between 0.5 and proportion of supporting reads on reverse strand. (default=" << Caller::Default_max_strand_bias << ")" << endl
          << (int)Caller::Default_default_quality << ")" << endl
          << "    -l, --leave_uncalled    leave un-called graph regions in output" << endl
          << "    -c, --calls CALLS       write calls for each base in VCF-like text file CALLS." << endl
@@ -519,6 +520,7 @@ int main_call(int argc, char** argv) {
     int min_support = Caller::Default_min_support;
     double min_frac = Caller::Default_min_frac;
     int default_read_qual = Caller::Default_default_quality;
+    double max_strand_bias = Caller::Default_max_strand_bias;
     bool leave_uncalled = false;
     string calls_file;
     bool output_json = false;
@@ -535,6 +537,7 @@ int main_call(int argc, char** argv) {
                 {"min_support", required_argument, 0, 's'},
                 {"min_frac", required_argument, 0, 'f'},
                 {"default_read_qual", required_argument, 0, 'q'},
+                {"max_strand_bias", required_argument, 0, 'b'},
                 {"leave_uncalled", no_argument, 0, 'l'},
                 {"calls", required_argument, 0, 'c'},
                 {"json", no_argument, 0, 'j'},
@@ -545,7 +548,7 @@ int main_call(int argc, char** argv) {
             };
 
         int option_index = 0;
-        c = getopt_long (argc, argv, "d:e:s:f:q:lc:jpr:t:",
+        c = getopt_long (argc, argv, "d:e:s:f:q:b:lc:jpr:t:",
                          long_options, &option_index);
 
         /* Detect the end of the options. */
@@ -568,6 +571,9 @@ int main_call(int argc, char** argv) {
             break;            
         case 'q':
             default_read_qual = atoi(optarg);
+            break;
+        case 'b':
+            max_strand_bias = atof(optarg);
             break;
         case 'l':
             leave_uncalled = true;
@@ -661,7 +667,8 @@ int main_call(int argc, char** argv) {
     Caller caller(graph,
                   het_prior, min_depth, max_depth, min_support,
                   min_frac, Caller::Default_min_likelihood,
-                  leave_uncalled, default_read_qual, text_file_stream);
+                  leave_uncalled, default_read_qual, max_strand_bias,
+                  text_file_stream);
 
     function<void(NodePileup&)> lambda = [&caller](NodePileup& pileup) {
         caller.call_node_pileup(pileup);

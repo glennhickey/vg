@@ -68,8 +68,7 @@ bool Pileups::insert(NodePileup* pileup) {
 
 void Pileups::compute_from_alignment(VG& graph, Alignment& alignment) {
     // note to self: alignment.is_reverse() just means the read
-    // got reversed when put into sequence.  we do not need to
-    // handle it all here
+    // got reversed when put into sequence.  
     const Path& path = alignment.path();
     int64_t read_offset = 0;
     vector<int> mismatch_counts;
@@ -101,14 +100,24 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
                                 const Mapping& mapping, const Edit& edit,
                                 const vector<int>& mismatch_counts) {
     string seq = edit.sequence();
-    bool is_reverse = mapping.is_reverse();
+    // is the mapping reversed wrt read sequence? use for iterating
+    bool map_reverse = mapping.is_reverse();
+    // is the mapping reversed wrt to the *graph*? use for flipping stuff when writing pileup
+    bool aln_reverse = alignment.is_reverse() != mapping.is_reverse();
+    // is seq reversed compared to what we actually want to write
+    bool seq_reverse = alignment.is_reverse();
+
+    // reverse mapping, we flip sequence for comparison purposes to read
+    if (map_reverse) {
+        seq = reverse_complement(seq);
+    }
     
     // ***** MATCH *****
     if (edit.from_length() == edit.to_length()) {
         assert (edit.from_length() > 0);
-        make_match(seq, edit.from_length(), is_reverse);
+        make_match(seq, edit.from_length(), aln_reverse);
         assert(seq.length() == edit.from_length());            
-        int64_t delta = is_reverse ? -1 : 1;
+        int64_t delta = map_reverse ? -1 : 1;
         for (int64_t i = 0; i < edit.from_length(); ++i) {
             if (pass_filter(alignment, read_offset, mismatch_counts)) {
                 BasePileup* base_pileup = get_create_base_pileup(pileup, node_offset);
@@ -120,9 +129,13 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
                 }
                 // add base to bases field (converting to ,. if match)
                 char base = seq[i];
-                if (!edit.sequence().empty() &&
-                    base_equal(seq[i], node.sequence()[node_offset], is_reverse)) {
-                    base = is_reverse ? ',' : '.';
+                if (base_equal(seq[i], node.sequence()[node_offset], false)) {
+                    base = aln_reverse ? ',' : '.';
+                } else if (seq_reverse && base != ',' && base != '.') {
+                    base = reverse_complement(::toupper(base));
+                    if (aln_reverse) {
+                        base = ::tolower(base);
+                    }
                 }
                 *base_pileup->mutable_bases() += base;
                 // add quality if there
@@ -140,12 +153,15 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
     // ***** INSERT *****
     else if (edit.from_length() < edit.to_length()) {
         if (pass_filter(alignment, read_offset, mismatch_counts)) {
-            make_insert(seq, is_reverse);
+            if (seq_reverse) {
+                reverse_complement(seq);
+            }
+            make_insert(seq, aln_reverse);
             assert(edit.from_length() == 0);
             // we define insert (like sam) as insertion between current and next
             // position (on forward node coordinates). this means an insertion before
             // offset 0 is invalid! 
-            int64_t insert_offset =  is_reverse ? node_offset : node_offset - 1;
+            int64_t insert_offset =  map_reverse ? node_offset : node_offset - 1;
             if (insert_offset >= 0) {        
                 BasePileup* base_pileup = get_create_base_pileup(pileup, insert_offset);
                 // reference_base if empty
@@ -155,7 +171,6 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
                     assert(base_pileup->ref_base() == node.sequence()[insert_offset]);
                 }
                 // add insertion string to bases field
-                // todo: should we reverse complement this if mapping is reversed ??? 
                 base_pileup->mutable_bases()->append(seq);
                 if (!alignment.quality().empty()) {
                     *base_pileup->mutable_qualities() += alignment.quality()[read_offset];
@@ -185,10 +200,14 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
         if (pass_filter(alignment, read_offset, mismatch_counts)) {
             assert(edit.to_length() == 0);
             assert(edit.sequence().empty());
-            int64_t del_start = !is_reverse ? node_offset :
+            int64_t del_start = !map_reverse ? node_offset :
                 node_offset - edit.from_length() + 1;
             seq = node.sequence().substr(del_start, edit.from_length());
-            make_delete(seq, is_reverse);
+            // add deletion string to bases field
+            if (seq_reverse) {
+                reverse_complement(seq);
+            }            
+            make_delete(seq, aln_reverse);
             BasePileup* base_pileup = get_create_base_pileup(pileup, node_offset);
             // reference_base if empty
             if (base_pileup->num_bases() == 0) {
@@ -196,8 +215,6 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
             } else {
                 assert(base_pileup->ref_base() == node.sequence()[node_offset]);
             }
-            // add deletion string to bases field
-            // todo: should we reverse complement this if mapping is reversed ??? 
             base_pileup->mutable_bases()->append(seq);
             if (!alignment.quality().empty()) {
                 *base_pileup->mutable_qualities() += alignment.quality()[read_offset];
@@ -205,7 +222,7 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
             // pileup size increases by 1
             base_pileup->set_num_bases(base_pileup->num_bases() + 1);
         }
-        int64_t delta = is_reverse ? -edit.from_length() : edit.from_length();
+        int64_t delta = map_reverse ? -edit.from_length() : edit.from_length();
         // stay put on read, move left/right depending on strand on reference
         node_offset += delta;
     }

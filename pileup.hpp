@@ -20,8 +20,7 @@ using namespace std;
 class Pileups {
 public:
     
-    Pileups(int min_quality = 0, int max_mismatches = 1, int window_size = 0,
-            double max_insert_frac_read_end = 0.1) :
+    Pileups(int min_quality = 0, int max_mismatches = 1, int window_size = 0) :
         _min_quality(min_quality),
         _max_mismatches(max_mismatches),
         _window_size(window_size) {}
