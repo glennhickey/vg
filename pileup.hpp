@@ -24,8 +24,7 @@ public:
             double max_insert_frac_read_end = 0.1) :
         _min_quality(min_quality),
         _max_mismatches(max_mismatches),
-        _window_size(window_size),
-        _max_insert_frac_read_end(max_insert_frac_read_end) {}
+        _window_size(window_size) {}
     
     // copy constructor
     Pileups(const Pileups& other) {
@@ -36,7 +35,6 @@ public:
             _min_quality = other._min_quality;
             _max_mismatches = other._max_mismatches;
             _window_size = other._window_size;
-            _max_insert_frac_read_end = other._max_insert_frac_read_end;
         }
     }
 
@@ -47,7 +45,6 @@ public:
         _min_quality = other._min_quality;
         _max_mismatches = other._max_mismatches;
         _window_size = other._window_size;
-        _max_insert_frac_read_end = other._max_insert_frac_read_end;        
     }
 
     // copy assignment operator
@@ -64,7 +61,6 @@ public:
         _min_quality = other._min_quality;
         _max_mismatches = other._max_mismatches;
         _window_size = other._window_size;
-        _max_insert_frac_read_end = other._max_insert_frac_read_end;
         return *this;
     }
 
@@ -84,8 +80,6 @@ public:
     int _max_mismatches;
     // number of bases to scan in each direction for mismatches
     int _window_size;
-    // to work around clipping issues, we skip last read bases if there too many inserts
-    double _max_insert_frac_read_end;
 
     // write to JSON
     void to_json(ostream& out);
@@ -142,11 +136,6 @@ public:
     // check base quality as well as miss match filter
     bool pass_filter(const Alignment& alignment, int read_offset,
                      const vector<int>& mismatches) const;
-
-    // look at the base pileup for the last base of a read.  if there are too many
-    // inserts hanging off, zap it.  this is to deal with an observed issue with
-    // map's soft clipping logic. 
-    void filter_end_inserts(NodePileup& pileup, int64_t node_offset, const Node& node);
             
     // move all entries in other object into this one.
     // if two positions collide, they are merged.

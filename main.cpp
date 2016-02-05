@@ -36,7 +36,8 @@ void help_filter(char** argv) {
          << "    -e, --min-pri-delta N   minimum (primary - secondary) score delta to keep primary alignment [default=0]" << endl
          << "    -f, --frac-score        normalize score based on length" << endl
          << "    -a, --frac-delta        use (secondary / primary) for delta comparisons" << endl
-         << "    -u, --substitutions     use substitution count instead of score" << endl;
+         << "    -u, --substitutions     use substitution count instead of score" << endl
+         << "    -o, --max-overhang N    filter reads whose alignments begin or end with an insert > N [default=100]" << endl;
 }
 
 int main_filter(int argc, char** argv) {
@@ -53,6 +54,7 @@ int main_filter(int argc, char** argv) {
     bool frac_score = false;
     bool frac_delta = false;
     bool sub_score = false;
+    int max_overhang = 100;
 
     int c;
     optind = 2; // force optind past command positional arguments
@@ -66,11 +68,12 @@ int main_filter(int argc, char** argv) {
                 {"frac-score", required_argument, 0, 'f'},
                 {"frac-delta", required_argument, 0, 'a'}, 
                 {"substitutions", required_argument, 0, 'u'},
+                {"max-overhang", required_argument, 0, 'o'},
                 {0, 0, 0, 0}
             };
 
         int option_index = 0;
-        c = getopt_long (argc, argv, "s:r:d:e:fau",
+        c = getopt_long (argc, argv, "s:r:d:e:fauo:",
                          long_options, &option_index);
 
         /* Detect the end of the options. */
@@ -99,6 +102,9 @@ int main_filter(int argc, char** argv) {
             break;
         case 'u':
             sub_score = true;
+            break;
+        case 'o':
+            max_overhang = atoi(optarg);
             break;
         case 'h':
         case '?':
@@ -181,6 +187,22 @@ int main_filter(int argc, char** argv) {
                 assert(score == 0.);
             }
         }
+        // compute overhang
+        int overhang = 0;
+        if (aln.path().mapping_size() > 0) {
+            const auto& left_mapping = aln.path().mapping(0);
+            if (left_mapping.edit_size() > 0) {
+                overhang = left_mapping.edit(0).to_length() - left_mapping.edit(0).from_length();
+            }
+            const auto& right_mapping = aln.path().mapping(aln.path().mapping_size() - 1);
+            if (right_mapping.edit_size() > 0) {
+                const auto& edit = right_mapping.edit(right_mapping.edit_size() - 1);
+                overhang = max(overhang, edit.to_length() - edit.from_length());
+            }
+        } else {
+            overhang = aln.sequence().length();
+        }
+
         if (aln.is_secondary()) {
             assert(prev_primary && aln.name() == buffer.back().name());
             double delta = prev_score - score;
@@ -188,7 +210,7 @@ int main_filter(int argc, char** argv) {
                 delta = prev_score > 0 ? score / prev_score : 0.;
             }
             // filter (current) secondary
-            keep = score >= min_secondary && delta >= min_sec_delta;
+            keep = score >= min_secondary && delta >= min_sec_delta && overhang <= max_overhang;
             // filter (last) primary
             keep_prev = keep_prev && delta >= min_pri_delta;
 
@@ -212,7 +234,7 @@ int main_filter(int argc, char** argv) {
         } else {
             prev_primary = true;
             prev_score = score;
-            keep_prev = score >= min_primary;
+            keep_prev = score >= min_primary && overhang <= max_overhang;
             buffer.push_back(aln);
         }
     };

@@ -87,14 +87,6 @@ void Pileups::compute_from_alignment(VG& graph, Alignment& alignment) {
                 compute_from_edit(*pileup, node_offset, read_offset, *node,
                                   alignment, mapping, edit, mismatch_counts);
             }
-
-            // if we're the last base of the read, kill the base pileup
-            // if there are too many hanging inserts. 
-            if (read_offset == alignment.sequence().length()) {
-                assert (i == path.mapping_size() - 1);
-                int last_offset = node_offset > 0 ? node_offset - 1 : 0;
-                filter_end_inserts(*pileup, last_offset, *node);
-            }
         }
     }
     assert(alignment.sequence().empty() ||
@@ -308,23 +300,6 @@ bool Pileups::pass_filter(const Alignment& alignment, int read_offset,
         passes = passes && count <= _max_mismatches;
     }
     return passes;
-}
-
-void Pileups::filter_end_inserts(NodePileup& pileup, int64_t node_offset, const Node& node)
-{
-    int insert_count = 0;
-    BasePileup* base_pileup = get_create_base_pileup(pileup, node_offset);
-    for (int i = 0; i < base_pileup->bases().length(); ++i) {
-        if (base_pileup->bases()[i] == '+') {
-            ++insert_count;
-        }
-    }
-    if (base_pileup->num_bases() > 0 &&
-        (double)insert_count / (double)base_pileup->num_bases() > _max_insert_frac_read_end) {
-        base_pileup->set_num_bases(0);
-        base_pileup->mutable_bases()->clear();
-        base_pileup->mutable_qualities()->clear();
-    }
 }
 
 Pileups& Pileups::merge(Pileups& other) {
