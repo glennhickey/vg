@@ -40,6 +40,8 @@ public:
     static const double Default_min_likelihood;
     // use this score when pileup is missing quality
     static const char Default_default_quality;
+    // use to balance alignments to forward and reverse strand
+    static const double Default_max_strand_bias;
     
     Caller(VG* graph,
            double het_prior = Default_het_prior,
@@ -50,6 +52,7 @@ public:
            double min_likelihood = Default_min_likelihood, 
            bool leave_uncalled = false,
            int default_quality = Default_default_quality,
+           double max_strand_bias = Default_max_strand_bias,
            ostream* text_calls = NULL);
     ~Caller();
     void clear();
@@ -98,6 +101,8 @@ public:
     bool _leave_uncalled;
     // if we don't have a mapping quality for a read position, use this
     char _default_quality;
+    // min deviation from .5 in proportion of negative strand reads
+    double _max_strand_bias;
 
     // write the call graph
     void write_call_graph(ostream& out, bool json);
@@ -115,8 +120,8 @@ public:
     // Find the top-two bases in a pileup, along with their counts
     void compute_top_frequencies(const BasePileup& bp,
                                  const vector<pair<int, int> >& base_offsets,
-                                 char& top_base, int& top_count,
-                                 char& second_base, int& second_count);
+                                 char& top_base, int& top_count, int& top_rev_count,
+                                 char& second_base, int& second_count, int& second_rev_count);
     
     // compute genotype for a position with maximum prob
     double mp_snp_genotype(const BasePileup& bp,

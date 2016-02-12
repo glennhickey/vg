@@ -18,6 +18,7 @@ const int Caller::Default_min_support = 1;
 const double Caller::Default_min_frac = 0.25;
 const double Caller::Default_min_likelihood = 1e-50;
 const char Caller::Default_default_quality = 30;
+const double Caller::Default_max_strand_bias = 0.25;
 
 Caller::Caller(VG* graph,
                double het_prior,
@@ -28,6 +29,7 @@ Caller::Caller(VG* graph,
                double min_likelihood, 
                bool leave_uncalled,
                int default_quality,
+               double max_strand_bias,
                ostream* text_calls):
     _graph(graph),
     _het_log_prior(safe_log(het_prior)),
@@ -39,6 +41,7 @@ Caller::Caller(VG* graph,
     _min_log_likelihood(safe_log(min_likelihood)),
     _leave_uncalled(leave_uncalled),
     _default_quality(default_quality),
+    _max_strand_bias(max_strand_bias),
     _text_calls(text_calls) {
     _max_id = _graph->max_node_id();
 }
@@ -163,9 +166,12 @@ void Caller::call_base_pileup(const NodePileup& np, int64_t offset) {
     // compute top two most frequent bases and their counts
     char top_base;
     int top_count;
+    int top_rev_count;
     char second_base;
     int second_count;
-    compute_top_frequencies(bp, base_offsets, top_base, top_count, second_base, second_count);
+    int second_rev_count;
+    compute_top_frequencies(bp, base_offsets, top_base, top_count, top_rev_count,
+                            second_base, second_count, second_rev_count);
 
     // note first and second base will be upper case too
     char ref_base = ::toupper(bp.ref_base());
@@ -173,6 +179,10 @@ void Caller::call_base_pileup(const NodePileup& np, int64_t offset) {
     // compute threshold
     int min_support = max(int(_min_frac * (double)bp.num_bases()), _min_support);
 
+    // compute strand bias
+    double top_sb = top_count > 0 ? abs(0.5 - (double)top_rev_count / (double)top_count) : 0;
+    double second_sb = second_count > 0 ? abs(0.5 - (double)second_rev_count / (double)second_count) : 0;
+    
     // compute max likelihood snp genotype.  it will be one of the three combinations
     // of the top two bases (we don't care about case here)
     pair<char, char> g;
@@ -180,14 +190,14 @@ void Caller::call_base_pileup(const NodePileup& np, int64_t offset) {
 
     if (_node_likelihoods[offset] >= _min_log_likelihood) {
         // update the node calls
-        if (top_count >= min_support) {
+        if (top_count >= min_support && top_sb <= _max_strand_bias) {
             if (g.first != ref_base) {
                 _node_calls[offset].first = g.first;
             } else {
                 _node_calls[offset].first = '.';
             }
         }
-        if (second_count >= min_support) {
+        if (second_count >= min_support && second_sb <= _max_strand_bias) {
             if (g.second != ref_base && g.second != g.first) {
                 _node_calls[offset].second = g.second;
             } else {
@@ -199,15 +209,21 @@ void Caller::call_base_pileup(const NodePileup& np, int64_t offset) {
 
 void Caller::compute_top_frequencies(const BasePileup& bp,
                                      const vector<pair<int, int> >& base_offsets,
-                                     char& top_base, int& top_count,
-                                     char& second_base, int& second_count) {
+                                     char& top_base, int& top_count, int& top_rev_count,
+                                     char& second_base, int& second_count, int& second_rev_count) {
 
     const string& bases = bp.bases();
     // frequency of each base (nidx / idxn converts to from / int)
     int hist[5] = {0};
+    // as above but onyl reverse strand
+    int rev_hist[5] = {0};
     for (auto i : base_offsets) {
         char base = Pileups::extract_match(bp, i.first);
         ++hist[nidx(base)];
+
+        if (bp.bases()[i.first] == ',' || ::islower(bp.bases()[i.first])) {
+            ++rev_hist[nidx(base)];
+        }
     }
     
     int first = max_element(hist, hist + 4) - hist;
@@ -232,8 +248,10 @@ void Caller::compute_top_frequencies(const BasePileup& bp,
 
     top_base = idxn(first);
     top_count = hist[first];
+    top_rev_count = rev_hist[first];
     second_base = idxn(second);
     second_count = hist[second];
+    second_rev_count = rev_hist[second];
 }
 
 // Estimate the most probable snp genotype
