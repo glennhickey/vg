@@ -20,30 +20,34 @@ using namespace std;
 class Pileups {
 public:
     
-    Pileups(int min_quality = 0, int max_mismatches = 1, int window_size = 0) :
+    Pileups(int min_quality = 0, int max_mismatches = 1, int window_size = 0,
+            double max_insert_frac_read_end = 0.1) :
         _min_quality(min_quality),
         _max_mismatches(max_mismatches),
-        _window_size(window_size) {}
+        _window_size(window_size),
+        _max_insert_frac_read_end(max_insert_frac_read_end) {}
     
     // copy constructor
     Pileups(const Pileups& other) {
         if (this != &other) {
-            for (auto& p : other._pileups) {
-                insert(new NodePileup(*p.second));
+            for (auto& p : other._node_pileups) {
+                insert_node_pileup(new NodePileup(*p.second));
             }
             _min_quality = other._min_quality;
             _max_mismatches = other._max_mismatches;
             _window_size = other._window_size;
+            _max_insert_frac_read_end = other._max_insert_frac_read_end;
         }
     }
 
     // move constructor
     Pileups(Pileups&& other) noexcept {
-        _pileups = other._pileups;
-        other._pileups.clear();
+        _node_pileups = other._node_pileups;
+        other._node_pileups.clear();
         _min_quality = other._min_quality;
         _max_mismatches = other._max_mismatches;
         _window_size = other._window_size;
+        _max_insert_frac_read_end = other._max_insert_frac_read_end;        
     }
 
     // copy assignment operator
@@ -55,11 +59,12 @@ public:
 
     // move assignment operator
     Pileups& operator=(Pileups&& other) noexcept {
-        swap(_pileups, other._pileups);
-        other._pileups.clear();
+        swap(_node_pileups, other._node_pileups);
+        other._node_pileups.clear();
         _min_quality = other._min_quality;
         _max_mismatches = other._max_mismatches;
         _window_size = other._window_size;
+        _max_insert_frac_read_end = other._max_insert_frac_read_end;
         return *this;
     }
 
@@ -69,16 +74,21 @@ public:
     }
     void clear();
 
-    typedef hash_map<int64_t, NodePileup*> PileupHash;
-    
+    typedef hash_map<int64_t, NodePileup*> NodePileupHash;
+    typedef pair_hash_map<pair<NodeSide, NodeSide>, EdgePileup*> EdgePileupHash;
+
     // This maps from Position to Pileup.
-    PileupHash _pileups;
+    NodePileupHash _node_pileups;
+    EdgePileupHash _edge_pileups;
+
     // Ignore bases with quality less than this
     int _min_quality;
     // max mismatches within window_size
     int _max_mismatches;
     // number of bases to scan in each direction for mismatches
     int _window_size;
+    // to work around clipping issues, we skip last read bases if there too many inserts
+    double _max_insert_frac_read_end;
 
     // write to JSON
     void to_json(ostream& out);
@@ -88,17 +98,17 @@ public:
     void write(ostream& out, uint64_t buffer_size = 1000);
 
     // apply function to each pileup in table
-    void for_each(const function<void(NodePileup&)>& lambda);
+    void for_each_node_pileup(const function<void(NodePileup&)>& lambda);
 
     // search hash table for node id
-    NodePileup* get(int64_t node_id) {
-        auto p = _pileups.find(node_id);
-        return p != _pileups.end() ? p->second : NULL;
+    NodePileup* get_node_pileup(int64_t node_id) {
+        auto p = _node_pileups.find(node_id);
+        return p != _node_pileups.end() ? p->second : NULL;
     }
         
     // get a pileup.  if it's null, create a new one and insert it.
-    NodePileup* get_create(const Node* node) {
-      NodePileup* p = get(node->id());
+    NodePileup* get_create_node_pileup(const Node* node) {
+      NodePileup* p = get_node_pileup(node->id());
         if (p == NULL) {
             p = new NodePileup();
             p->set_node_id(node->id());
@@ -107,15 +117,46 @@ public:
                 b->set_num_bases(0);
                 b->set_ref_base((int)node->sequence()[i]);
             }
-            _pileups[node->id()] = p;
+            _node_pileups[node->id()] = p;
         }
         return p;
-    }   
+    }
+
+    void for_each_edge_pileup(const function<void(EdgePileup&)>& lambda);
+
+    // search hash table for edge id
+    EdgePileup* get_edge_pileup(pair<NodeSide, NodeSide> sides) {
+        if (sides.first < sides.second) {
+            swap(sides.first, sides.second);
+        }
+        auto p = _edge_pileups.find(sides);
+        return p != _edge_pileups.end() ? p->second : NULL;
+    }
+            
+    // get a pileup.  if it's null, create a new one and insert it.
+    EdgePileup* get_create_edge_pileup(pair<NodeSide, NodeSide> sides) {
+        if (sides.first < sides.second) {
+            swap(sides.first, sides.second);
+        }
+        EdgePileup* p = get_edge_pileup(sides);
+        if (p == NULL) {
+            p = new EdgePileup();
+            p->mutable_edge()->set_from(sides.first.node);
+            p->mutable_edge()->set_from_start(!sides.first.is_end);
+            p->mutable_edge()->set_to(sides.second.node);
+            p->mutable_edge()->set_to_end(sides.second.is_end);
+            _edge_pileups[sides] = p;
+        }
+        return p;
+    }
+    
+    void extend(Pileup& pileup);
 
     // insert a pileup into the table. it will be deleted by ~Pileups()!!!
     // return true if new pileup inserted, false if merged into existing one
-    bool insert(NodePileup* pileup);
-
+    bool insert_node_pileup(NodePileup* pileup);
+    bool insert_edge_pileup(EdgePileup* edge_pileup);
+    
     // create / update all pileups from a single alignment
     void compute_from_alignment(VG& graph, Alignment& alignment);
 
@@ -135,6 +176,11 @@ public:
     // check base quality as well as miss match filter
     bool pass_filter(const Alignment& alignment, int read_offset,
                      const vector<int>& mismatches) const;
+
+    // look at the base pileup for the last base of a read.  if there are too many
+    // inserts hanging off, zap it.  this is to deal with an observed issue with
+    // map's soft clipping logic. 
+    void filter_end_inserts(NodePileup& pileup, int64_t node_offset, const Node& node);
             
     // move all entries in other object into this one.
     // if two positions collide, they are merged.
@@ -146,6 +192,9 @@ public:
 
     // merge p2 into p1 and return 1. p2 is lef an empty husk
     static NodePileup& merge_node_pileups(NodePileup& p1, NodePileup& p2);
+    
+    // merge p2 into p1 and return 1. p2 is lef an empty husk
+    static EdgePileup& merge_edge_pileups(EdgePileup& p1, EdgePileup& p2);
 
     // get ith BasePileup record
     static BasePileup* get_base_pileup(NodePileup& np, int64_t offset) {

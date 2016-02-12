@@ -9,59 +9,115 @@ using namespace std;
 namespace vg {
 
 void Pileups::clear() {
-    for (auto& p : _pileups) {
+    for (auto& p : _node_pileups) {
         delete p.second;
     }
-    _pileups.clear();
+    _node_pileups.clear();
+
+    for (auto& p : _edge_pileups) {
+        delete p.second;
+    }
+    _edge_pileups.clear();
 }
 
 void Pileups::to_json(ostream& out) {
-    function<void(NodePileup&)> lambda = [this, &out](NodePileup& p) {
-        out << pb2json(p) <<endl;
-    };
-    for_each(lambda);
+    out << "{\"node_pileups\": [";
+    for (NodePileupHash::iterator i = _node_pileups.begin(); i != _node_pileups.end();) {
+        out << pb2json(*i->second);
+        ++i;
+        if (i != _node_pileups.end()) {
+            out << ",";
+        }
+    }
+    out << "]," << endl << "\"edge_pileups\": [";
+    for (EdgePileupHash::iterator i = _edge_pileups.begin(); i != _edge_pileups.end();) {
+        out << pb2json(*i->second);
+        ++i;
+        if (i != _edge_pileups.end()) {
+            out << ",";
+        }
+    }
+    out << "]}" << endl;
 }
 
 void Pileups::load(istream& in) {
-    function<void(NodePileup&)> lambda = [this](NodePileup& pileup) {
-        insert(new NodePileup(pileup));
+    function<void(Pileup&)> lambda = [this](Pileup& pileup) {
+        extend(pileup);
     };
     stream::for_each(in, lambda);
 }
 
-void Pileups::write(ostream& out, uint64_t buffer_size) {
-    // maybe there's a more efficient way of getting
-    // these into the stream from the hash table?  for now
-    // we just buffer in a vector
-    vector<NodePileup*> buf;
-    function<NodePileup&(uint64_t)> lambda = [&](uint64_t i) -> NodePileup& {
-        return *buf[i];
+void Pileups::write(ostream& out, uint64_t chunk_size) {
+
+    int64_t count = max(_node_pileups.size(), _edge_pileups.size()) / chunk_size;
+    if (max(_node_pileups.size(), _edge_pileups.size()) % chunk_size != 0) {
+        ++count;
+    }
+
+    NodePileupHash::iterator node_it = _node_pileups.begin();
+    EdgePileupHash::iterator edge_it = _edge_pileups.begin();
+    Pileup pileup;
+
+    // note: this won't work at all in parallel but presumably write
+    // is single threaded...
+    function<Pileup&(uint64_t)> lambda = [&](uint64_t i) -> Pileup& {
+        pileup.clear_node_pileups();
+        pileup.clear_edge_pileups();
+        for (int j = 0; j < chunk_size && node_it != _node_pileups.end(); ++j, ++node_it) {
+            NodePileup* np = pileup.add_node_pileups();
+            *np = *node_it->second;
+        }
+        // unlike for Graph, we don't bother to try to group edges with nodes they attach
+        for (int j = 0; j < chunk_size && edge_it != _edge_pileups.end(); ++j, ++edge_it) {
+            EdgePileup* ep = pileup.add_edge_pileups();
+            *ep = *edge_it->second;
+        }
+
+        return pileup;
     };
-    for (auto& p : _pileups) {
-        buf.push_back(p.second);
-        if (buf.size() >= buffer_size) {
-            stream::write(out, buf.size(), lambda);
-            buf.clear();
-        }  
-    }
-    if (!buf.empty()) {
-        stream::write(out, buf.size(), lambda);
-    }
+
+    stream::write(out, count, lambda);
 }
 
-void Pileups::for_each(const function<void(NodePileup&)>& lambda) {
-    for (auto& p : _pileups) {
+void Pileups::for_each_node_pileup(const function<void(NodePileup&)>& lambda) {
+    for (auto& p : _node_pileups) {
         lambda(*p.second);
     }
 }
 
-bool Pileups::insert(NodePileup* pileup) {
-    NodePileup* existing = get(pileup->node_id());
+void Pileups::for_each_edge_pileup(const function<void(EdgePileup&)>& lambda) {
+    for (auto& p : _edge_pileups) {
+        lambda(*p.second);
+    }
+}
+
+void Pileups::extend(Pileup& pileup) {
+    for (int i = 0; i < pileup.node_pileups_size(); ++i) {
+        insert_node_pileup(new NodePileup(pileup.node_pileups(i)));
+    }
+    for (int i = 0; i < pileup.edge_pileups_size(); ++i) {
+        insert_edge_pileup(new EdgePileup(pileup.edge_pileups(i)));
+    }
+}
+
+bool Pileups::insert_node_pileup(NodePileup* pileup) {
+    NodePileup* existing = get_node_pileup(pileup->node_id());
     if (existing != NULL) {
         merge_node_pileups(*existing, *pileup);
         delete pileup;
     } else {
-        _pileups[pileup->node_id()] = pileup;
+        _node_pileups[pileup->node_id()] = pileup;
+    }
+    return existing == NULL;
+}
+
+bool Pileups::insert_edge_pileup(EdgePileup* pileup) {
+    EdgePileup* existing = get_edge_pileup(NodeSide::pair_from_edge(*pileup->mutable_edge()));
+    if (existing != NULL) {
+        merge_edge_pileups(*existing, *pileup);
+        delete pileup;
+    } else {
+        _edge_pileups[NodeSide::pair_from_edge(*pileup->mutable_edge())] = pileup;
     }
     return existing == NULL;
 }
@@ -74,12 +130,18 @@ void Pileups::compute_from_alignment(VG& graph, Alignment& alignment) {
     int64_t read_offset = 0;
     vector<int> mismatch_counts;
     count_mismatches(graph, path, mismatch_counts);
+    // element i = location of rank i in the mapping array
+    vector<int> ranks(path.mapping_size() + 1, -1);
+    // keep track of read offset of mapping array element i
+    vector<int> in_read_offsets(path.mapping_size());
+    vector<int> out_read_offsets(path.mapping_size());
     for (int i = 0; i < path.mapping_size(); ++i) {
         const Mapping& mapping = path.mapping(i);
         if (graph.has_node(mapping.position().node_id())) {
             const Node* node = graph.get_node(mapping.position().node_id());
-            NodePileup* pileup = get_create(node);
+            NodePileup* pileup = get_create_node_pileup(node);
             int64_t node_offset = mapping.position().offset();
+            in_read_offsets[i] = read_offset;
             for (int j = 0; j < mapping.edit_size(); ++j) {
                 const Edit& edit = mapping.edit(j);
                 // process all pileups in edit.
@@ -87,11 +149,50 @@ void Pileups::compute_from_alignment(VG& graph, Alignment& alignment) {
                 compute_from_edit(*pileup, node_offset, read_offset, *node,
                                   alignment, mapping, edit, mismatch_counts);
             }
+            out_read_offsets[i] = read_offset - 1;
+
+            // if we're the last base of the read, kill the base pileup
+            // if there are too many hanging inserts. 
+            if (read_offset == alignment.sequence().length()) {
+                assert (i == path.mapping_size() - 1);
+                int last_offset = node_offset > 0 ? node_offset - 1 : 0;
+                filter_end_inserts(*pileup, last_offset, *node);
+            }
+        }
+        int rank = mapping.rank() <= 0 ? i + 1 : mapping.rank();
+        if (rank <= 0 || rank >= ranks.size() || ranks[rank] != -1) {
+            cerr << "Error determining rank of mapping " << i << " in path " << path.name() << ": "
+                 << pb2json(mapping) << endl;
+        }
+        else {
+            ranks[rank] = i;
         }
     }
+
+    // loop again over all the edges crossed by the mapping alignment, using
+    // the offsets and ranking information we got in the first pass
+    for (int i = 2; i < ranks.size(); ++i) {
+        int rank1_idx = ranks[i-1];
+        int rank2_idx = ranks[i];
+        if (rank1_idx > 0 || rank2_idx > 0) {
+            auto& m1 = path.mapping(rank1_idx);
+            auto& m2 = path.mapping(rank2_idx);
+            auto s1 = NodeSide(m1.position().node_id(), (m1.is_reverse() ? false : true));
+            auto s2 = NodeSide(m2.position().node_id(), (m2.is_reverse() ? true : false));
+            EdgePileup* edge_pileup = get_create_edge_pileup(pair<NodeSide, NodeSide>(s1, s2));
+            edge_pileup->set_num_reads(edge_pileup->num_reads() + 1);
+            if (!alignment.quality().empty()) {
+                char from_qual = alignment.quality()[out_read_offsets[rank1_idx]];
+                char to_qual = alignment.quality()[in_read_offsets[rank2_idx]];
+                *edge_pileup->mutable_qualities() += min(from_qual, to_qual);
+            }
+        }
+    }
+    
     assert(alignment.sequence().empty() ||
            alignment.path().mapping_size() == 0 ||
            read_offset == alignment.sequence().length());
+
 }
 
 void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
@@ -301,12 +402,28 @@ bool Pileups::pass_filter(const Alignment& alignment, int read_offset,
     return passes;
 }
 
+void Pileups::filter_end_inserts(NodePileup& pileup, int64_t node_offset, const Node& node)
+{
+    int insert_count = 0;
+    BasePileup* base_pileup = get_create_base_pileup(pileup, node_offset);
+    for (int i = 0; i < base_pileup->bases().length(); ++i) {
+        if (base_pileup->bases()[i] == '+') {
+            ++insert_count;
+        }
+    }
+    if (base_pileup->num_bases() > 0 &&
+        (double)insert_count / (double)base_pileup->num_bases() > _max_insert_frac_read_end) {
+        base_pileup->set_num_bases(0);
+        base_pileup->mutable_bases()->clear();
+        base_pileup->mutable_qualities()->clear();
+    }
+}
 
 Pileups& Pileups::merge(Pileups& other) {
-    for (auto& p : other._pileups) {
-        insert(p.second);
+    for (auto& p : other._node_pileups) {
+        insert_node_pileup(p.second);
     }
-    other._pileups.clear();
+    other._node_pileups.clear();
     return *this;
 }
 
@@ -333,6 +450,19 @@ NodePileup& Pileups::merge_node_pileups(NodePileup& p1, NodePileup& p2) {
         merge_base_pileups(*bp1, *bp2);
     }
     p2.clear_base_pileup();
+    return p1;
+}
+
+EdgePileup& Pileups::merge_edge_pileups(EdgePileup& p1, EdgePileup& p2) {
+    assert(p1.edge().from() == p2.edge().from());
+    assert(p1.edge().to() == p2.edge().to());
+    assert(p1.edge().from_start() == p2.edge().from_start());
+    assert(p1.edge().to_end() == p2.edge().to_end());
+    
+    p1.set_num_reads(p1.num_reads() + p2.num_reads());
+    p1.mutable_qualities()->append(p2.qualities());
+    p2.set_num_reads(0);
+    p2.clear_qualities();
     return p1;
 }
 

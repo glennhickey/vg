@@ -4836,7 +4836,7 @@ int main_view(int argc, char** argv) {
         if (input_json == false) {
             if (output_type == "json") {
                 // convert values to printable ones
-                function<void(NodePileup&)> lambda = [](NodePileup& p) {
+                function<void(Pileup&)> lambda = [](Pileup& p) {
                     cout << pb2json(p) << "\n";
                 };
                 if (file_name == "-") {
@@ -4853,7 +4853,7 @@ int main_view(int argc, char** argv) {
             }
         } else {
             if (output_type == "json" || output_type == "pileup") {
-                JSONStreamHelper<NodePileup> json_helper(file_name);
+                JSONStreamHelper<Pileup> json_helper(file_name);
                 json_helper.write(cout, output_type == "json");
             } else {
                 cerr << "[vg view] error: JSON Pileup can only be converted to Pileup or JSON" << endl;
