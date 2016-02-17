@@ -112,12 +112,12 @@ bool Pileups::insert_node_pileup(NodePileup* pileup) {
 }
 
 bool Pileups::insert_edge_pileup(EdgePileup* pileup) {
-    EdgePileup* existing = get_edge_pileup(NodeSide::pair_from_edge(*pileup->mutable_edge()));
+    EdgePileup* existing = get_edge_pileup(NodeSidePos::pair_from_edge(*pileup->mutable_edge()));
     if (existing != NULL) {
         merge_edge_pileups(*existing, *pileup);
         delete pileup;
     } else {
-        _edge_pileups[NodeSide::pair_from_edge(*pileup->mutable_edge())] = pileup;
+        _edge_pileups[NodeSidePos::pair_from_edge(*pileup->mutable_edge())] = pileup;
     }
     return existing == NULL;
 }
@@ -153,7 +153,6 @@ void Pileups::compute_from_alignment(VG& graph, Alignment& alignment) {
             // if we're the last base of the read, kill the base pileup
             // if there are too many hanging inserts. 
             if (read_offset == alignment.sequence().length()) {
-                assert (i == path.mapping_size() - 1);
                 int last_offset = node_offset > 0 ? node_offset - 1 : 0;
                 filter_end_inserts(*pileup, last_offset, *node);
             }
@@ -167,7 +166,7 @@ void Pileups::compute_from_alignment(VG& graph, Alignment& alignment) {
             ranks[rank] = i;
         }
     }
-
+    cerr << "doing ranks" << endl;
     // loop again over all the edges crossed by the mapping alignment, using
     // the offsets and ranking information we got in the first pass
     for (int i = 2; i < ranks.size(); ++i) {
@@ -176,14 +175,22 @@ void Pileups::compute_from_alignment(VG& graph, Alignment& alignment) {
         if (rank1_idx > 0 || rank2_idx > 0) {
             auto& m1 = path.mapping(rank1_idx);
             auto& m2 = path.mapping(rank2_idx);
-            auto s1 = NodeSide(m1.position().node_id(), (m1.is_reverse() ? false : true));
-            auto s2 = NodeSide(m2.position().node_id(), (m2.is_reverse() ? true : false));
-            EdgePileup* edge_pileup = get_create_edge_pileup(pair<NodeSide, NodeSide>(s1, s2));
-            edge_pileup->set_num_reads(edge_pileup->num_reads() + 1);
+            auto s1 = NodeSidePos(m1.position().node_id(), (m1.is_reverse() ? false : true));
+            auto s2 = NodeSidePos(m2.position().node_id(), (m2.is_reverse() ? true : false));
+            // no quality gives a free pass from quality filter
+            char edge_qual = 127;
             if (!alignment.quality().empty()) {
                 char from_qual = alignment.quality()[out_read_offsets[rank1_idx]];
                 char to_qual = alignment.quality()[in_read_offsets[rank2_idx]];
-                *edge_pileup->mutable_qualities() += min(from_qual, to_qual);
+                edge_qual = min(from_qual, to_qual);
+            }
+            if (edge_qual >= _min_quality) {
+                EdgePileup* edge_pileup = get_create_edge_pileup(pair<NodeSidePos, NodeSidePos>(s1, s2));
+                cerr << "adding ep " << s1 << " --> " << s2 << endl;
+                edge_pileup->set_num_reads(edge_pileup->num_reads() + 1);
+                if (!alignment.quality().empty()) {
+                    *edge_pileup->mutable_qualities() += edge_qual;
+                }
             }
         }
     }
@@ -279,10 +286,9 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
                 base_pileup->set_num_bases(base_pileup->num_bases() + 1);
             }
             else {
-                // todo: need to either forget about these, or extend pileup format.
-                // easy solution: change insert to come before position, and just add
-                // optional pileup at n+1st base of node.  would like to figure out
-                // how samtools does it first...
+                // need to check with aligner to make sure this doesn't happen, ie
+                // inserts would hang off the end of previous node instead of start
+                // of this node
                 /*
                   stringstream ss;
                   ss << "Warning: pileup does not support insertions before 0th base in node."
@@ -290,7 +296,7 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
                   #pragma omp critical(cerr)
                   cerr << ss.str();
                 */
-         }
+            }
         }
         // move right along read (and stay put on reference)
         read_offset += edit.to_length();
@@ -302,25 +308,15 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
             assert(edit.sequence().empty());
             int64_t del_start = !map_reverse ? node_offset :
                 node_offset - edit.from_length() + 1;
-            seq = node.sequence().substr(del_start, edit.from_length());
-            // add deletion string to bases field
-            if (seq_reverse) {
-                reverse_complement(seq);
-            }            
-            make_delete(seq, aln_reverse);
-            BasePileup* base_pileup = get_create_base_pileup(pileup, node_offset);
-            // reference_base if empty
-            if (base_pileup->num_bases() == 0) {
-                base_pileup->set_ref_base(node.sequence()[node_offset]);
-            } else {
-                assert(base_pileup->ref_base() == node.sequence()[node_offset]);
-            }
-            base_pileup->mutable_bases()->append(seq);
+            // todo: eat up all adjacent deletes
+            // todo: figure out offsets
+            NodeSidePos del_from(node.id(), true, node_offset);
+            NodeSidePos del_to(node.id(), false, node_offset + edit.from_length());
+            EdgePileup* edge_pileup = get_create_edge_pileup(make_pair(del_from, del_to));
+            edge_pileup->set_num_reads(edge_pileup->num_reads() + 1);
             if (!alignment.quality().empty()) {
-                *base_pileup->mutable_qualities() += alignment.quality()[read_offset];
+                *edge_pileup->mutable_qualities() += alignment.quality()[read_offset];
             }
-            // pileup size increases by 1
-            base_pileup->set_num_bases(base_pileup->num_bases() + 1);
         }
         int64_t delta = map_reverse ? -edit.from_length() : edit.from_length();
         // stay put on read, move left/right depending on strand on reference
@@ -488,12 +484,8 @@ EdgePileup& Pileups::merge_edge_pileups(EdgePileup& p1, EdgePileup& p2) {
 }
 
 void Pileups::parse_base_offsets(const BasePileup& bp,
-                                 vector<pair<int, int> >& matchOffsets,
-                                 vector<pair<int, int> >& insOffsets,
-                                 vector<pair<int, int> >& delOffsets) {
-    matchOffsets.clear();
-    insOffsets.clear();
-    delOffsets.clear();
+                                 vector<pair<int, int> >& offsets) {
+    offsets.clear();
     
     const string& quals = bp.qualities();
     const string& bases = bp.bases();
@@ -505,8 +497,7 @@ void Pileups::parse_base_offsets(const BasePileup& bp,
     for (int i = 0; i < bp.num_bases(); ++i) {
         // indel
         if (bases[base_offset] == '+' || bases[base_offset] == '-') {
-            auto& buf = bases[base_offset] == '+' ? insOffsets : delOffsets;
-            buf.push_back(make_pair(base_offset, i < quals.length() ? i : -1));
+            offsets.push_back(make_pair(base_offset, i < quals.length() ? i : -1));
             int lf = base_offset + 1;
             int rf = lf;
             while (rf < bases.length() && bases[rf] >= '0' && bases[rf] <= '9') {
@@ -520,11 +511,47 @@ void Pileups::parse_base_offsets(const BasePileup& bp,
         }
         // match / snp
         else {
-            matchOffsets.push_back(make_pair(base_offset, i < quals.length() ? i : -1));
+            offsets.push_back(make_pair(base_offset, i < quals.length() ? i : -1));
             ++base_offset;
         }
     }
     assert(base_offset == bases.length());
+}
+
+char Pileups::extract_match(const BasePileup& bp, int offset) {
+    char v = bp.bases()[offset];
+    assert(v != '+' && v != '-');
+    if (v == ',' || v == '.') {
+        return ::toupper(bp.ref_base());
+    } else if (::islower(v)) {
+        return reverse_complement(::toupper(v));
+    }
+    return v;
+}
+
+// get arbitrary value from offset on forward strand
+string Pileups::extract(const BasePileup& bp, int offset) {
+    const string& bases = bp.bases();
+    if (bases[offset] != '+' && bases[offset] != '-') {
+        return string(1, extract_match(bp, offset));
+    }
+    else {
+        string len_str;
+        for (int i = offset + 1; bases[i] >= '0' && bases[i] <= '9'; ++i) {
+            len_str += bases[i];
+        }
+        int len = atoi(len_str.c_str());
+        // forward strand, return as is
+        if (::isupper(bases[offset + 1 + len_str.length()])) {
+            return bases.substr(offset, 1 + len_str.length() + len);
+        }
+        // reverse strand, flip the dna bases part and return upper case
+        else {
+            string dna = bases.substr(offset + 1 + len_str.length(), len);
+            casify(dna, false);
+            return string(1, bases[offset]) + len_str + reverse_complement(dna);
+        }
+    }
 }
 
 }

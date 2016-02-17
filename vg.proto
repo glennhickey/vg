@@ -158,8 +158,10 @@ message NodePileup {
 // Keep pileup-like record for reads that span edges
 message EdgePileup {
     Edge edge = 1;
-	 int32 num_reads = 2;
+ 	 int32 num_reads = 2;
 	 bytes qualities = 3;
+	 int32 from_offset = 4;  // offset in from_node (relative to side, 0 = no offset)
+	 int32 to_offset = 5; // offset in to_node (relative to side, 0 = no offset)
 }
 
 // Bundle up Node and Edge pileups

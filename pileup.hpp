@@ -13,6 +13,69 @@ namespace vg {
 
 using namespace std;
 
+// Augment NodeSide with an offset.  This is because we want to be able to
+// store SideGraph style edges (into the interior of a node) for deletions
+// if is_end is true, then offset = 0 is the end of the node, 1 is one base to the left etc.
+// otherwise, then offset = 0 is the start of the node, 1 is one base to the right, etc.
+class NodeSidePos : public NodeSide {
+public:
+    int32_t offset;
+
+    inline NodeSidePos(int64_t node, bool is_end = false, int32_t off = 0) :
+        NodeSide(node, is_end),
+        offset(off) {}
+    
+    inline NodeSidePos(): NodeSidePos(0) {}
+    
+    inline bool operator==(const NodeSidePos& other) const {
+        return node == other.node && is_end == other.is_end && offset == other.offset;
+    }
+
+    inline bool operator!=(const NodeSidePos& other) const {
+        return !(*this == other);
+    }
+
+    inline bool operator<(const NodeSidePos& other) const {
+        if (node < other.node) {
+            return true;
+        } else if (node == other.node) {
+            if (is_end < other.is_end) {
+                return true;
+            } else if (is_end == other.is_end) {
+                return offset < other.offset;
+            }
+        }
+        return false;
+    }
+    
+    // Make an edge into a canonically ordered pair of NodeSides
+    static inline pair<NodeSidePos, NodeSidePos> pair_from_edge(Edge* e) {
+        return minmax(NodeSidePos(e->from(), !e->from_start()), NodeSidePos(e->to(), e->to_end()));
+    }
+    
+    // Make an edge into a canonically ordered pair of NodeSides
+    static inline pair<NodeSidePos, NodeSidePos> pair_from_edge(Edge& e) {
+        return pair_from_edge(&e);
+    }
+};
+}
+
+namespace std {
+// We need to implement a hash function for these if we want to be able to use them in keys.
+template <> struct hash<vg::NodeSidePos>
+{
+    // Produce a hash of a NodeSide
+    size_t operator()(const vg::NodeSidePos& item) const
+    {
+        // offset's only 32 bits, so merge it with is_end
+        int64_t x = item.is_end ? item.offset : item.offset + numeric_limits<int32_t>::max();
+        // otherwise copy NodeSide's hash
+        return hash<pair<int64_t, int64_t>>()(make_pair(item.node, x));
+    }
+};
+}
+
+namespace vg {
 // This is a collection of protobuf Pileup records that are indexed
 // on their position. Pileups can be merged and streamed, and computed
 // from Alignments.  The pileup records themselves are essentially
@@ -75,7 +138,7 @@ public:
     void clear();
 
     typedef hash_map<int64_t, NodePileup*> NodePileupHash;
-    typedef pair_hash_map<pair<NodeSide, NodeSide>, EdgePileup*> EdgePileupHash;
+    typedef pair_hash_map<pair<NodeSidePos, NodeSidePos>, EdgePileup*> EdgePileupHash;
 
     // This maps from Position to Pileup.
     NodePileupHash _node_pileups;
@@ -125,7 +188,7 @@ public:
     void for_each_edge_pileup(const function<void(EdgePileup&)>& lambda);
 
     // search hash table for edge id
-    EdgePileup* get_edge_pileup(pair<NodeSide, NodeSide> sides) {
+    EdgePileup* get_edge_pileup(pair<NodeSidePos, NodeSidePos> sides) {
         if (sides.first < sides.second) {
             swap(sides.first, sides.second);
         }
@@ -134,7 +197,7 @@ public:
     }
             
     // get a pileup.  if it's null, create a new one and insert it.
-    EdgePileup* get_create_edge_pileup(pair<NodeSide, NodeSide> sides) {
+    EdgePileup* get_create_edge_pileup(pair<NodeSidePos, NodeSidePos> sides) {
         if (sides.first < sides.second) {
             swap(sides.first, sides.second);
         }
@@ -145,6 +208,8 @@ public:
             p->mutable_edge()->set_from_start(!sides.first.is_end);
             p->mutable_edge()->set_to(sides.second.node);
             p->mutable_edge()->set_to_end(sides.second.is_end);
+            p->set_from_offset(sides.first.offset);
+            p->set_to_offset(sides.second.offset);
             _edge_pileups[sides] = p;
         }
         return p;
@@ -216,11 +281,9 @@ public:
 
     // the bases string in BasePileup doesn't allow random access.  This function
     // will parse out all the offsets of snps, insertions, and deletions
-    // into separate arrays, each offset is a pair of indexes in the bases and qualities arrays
+    // into one array, each offset is a pair of indexes in the bases and qualities arrays
     static void parse_base_offsets(const BasePileup& bp,
-                                   vector<pair<int, int> >& matchOffsets,
-                                   vector<pair<int, int> >& insOffsets,
-                                   vector<pair<int, int> >& delOffests);
+                                   vector<pair<int, int> >& offsets);
 
     // transform case of every character in string
     static void casify(string& seq, bool is_reverse) {
@@ -258,17 +321,11 @@ public:
         return is_reverse ? t1 == reverse_complement(t2) : t1 == t2;
     }
 
-    // get a match base value from a pileup value
-    static char extract_match(const BasePileup& bp, int offset) {
-        char v = bp.bases()[offset];
-        assert(v != '+' && v != '-');
-        if (v == ',' || v == '.') {
-            return ::toupper(bp.ref_base());
-        } else if (::islower(v)) {
-            return reverse_complement(::toupper(v));
-        }
-        return v;
-    }
+    // get a pileup value on forward strand
+    static char extract_match(const BasePileup& bp, int offset);
+
+    // get arbitrary value from offset on forward strand
+    static string extract(const BasePileup& bp, int offset);
 };
 
 

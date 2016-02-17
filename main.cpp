@@ -669,9 +669,16 @@ int main_call(int argc, char** argv) {
                   min_frac, Caller::Default_min_likelihood,
                   leave_uncalled, default_read_qual, max_strand_bias,
                   text_file_stream);
-
-    function<void(NodePileup&)> lambda = [&caller](NodePileup& pileup) {
-        caller.call_node_pileup(pileup);
+    
+    function<void(Pileup&)> lambda = [&caller](Pileup& pileup) {
+        for (int i = 0; i < pileup.node_pileups_size(); ++i) {
+            cerr << "Call Node " << pileup.node_pileups(i).node_id() << endl;
+            caller.call_node_pileup(pileup.node_pileups(i));
+        }
+        for (int i = 0; i < pileup.edge_pileups_size(); ++i) {
+            cerr << "Call Edge " << pb2json(pileup.edge_pileups(i).edge()) << endl;
+            caller.call_edge_pileup(pileup.edge_pileups(i));
+        }
     };
     stream::for_each(*pileup_stream, lambda);
 

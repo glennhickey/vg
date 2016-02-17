@@ -67,7 +67,7 @@ public:
     // buffer for base calls for each position in the node
     // . = reference
     // - = missing
-    typedef pair<char, char> Genotype;
+    typedef pair<string, string> Genotype;
     vector<Genotype> _node_calls;
     vector<double> _node_likelihoods;
     // buffer for current node;
@@ -80,6 +80,7 @@ public:
     NodeMap _start_node_map;
     NodeMap _end_node_map;
     unordered_set<int64_t> _visited_nodes;
+    unordered_set<pair<NodeSide, NodeSide> > _called_edges;
 
     // used to favour homozygous genotype (r from MAQ paper)
     double _het_log_prior;
@@ -110,6 +111,9 @@ public:
     // call every position in the node pileup
     void call_node_pileup(const NodePileup& pileup);
 
+    // call an edge.  remembering it in a table for the whole graph
+    void call_edge_pileup(const EdgePileup& pileup);
+
     // fill in edges in the call graph (those that are incident to 2 call nodes)
     // and add uncalled nodes (optionally)
     void update_call_graph();
@@ -120,21 +124,30 @@ public:
     // Find the top-two bases in a pileup, along with their counts
     void compute_top_frequencies(const BasePileup& bp,
                                  const vector<pair<int, int> >& base_offsets,
-                                 char& top_base, int& top_count, int& top_rev_count,
-                                 char& second_base, int& second_count, int& second_rev_count);
+                                 string& top_base, int& top_count, int& top_rev_count,
+                                 string& second_base, int& second_count, int& second_rev_count);
     
     // compute genotype for a position with maximum prob
     double mp_snp_genotype(const BasePileup& bp,
                            const vector<pair<int, int> >& base_offsets,
-                           char top_base, char second_base, Genotype& mp_genotype);
+                           const string& top_base, const string& second_base,
+                           Genotype& mp_genotype);
     // compute likelihood of a genotype samtools-style
     double genotype_log_likelihood(const BasePileup& pb,
                                    const vector<pair<int, int> >& base_offsets,
-                                   double g, char first, char second);
+                                   double g, const string& first, const string& second);
 
     // write graph structure corresponding to all the calls for the current
     // node.  
     void create_node_calls(const NodePileup& np);
+
+    // create augmented edges connecting the new nodes created by create_node_calls
+    void create_edges(list<Node*> nodes1, list<Node*> nodes2, list<int> offsets1,
+                      list<int> offsets2);
+
+    // add edges implied by augmented deletes, breaking nodes they connect if necessary
+    void create_deletes(list<Node*> nodes1, list<Node*> nodes2, list<int> offsets1,
+                        list<int> offsets2);
 
     // make a path corresponding to a snp in the call grpah
     void create_snp_path(int64_t snp_node, bool secondary_snp);
@@ -174,17 +187,12 @@ public:
 
     // call missing
     bool missing_call(const Genotype& g) {
-        return g.first == '-' && (g.second == '.' || g.second == '-');
+        return g.first == "-" &&  g.second == "-";
     }
 
     // call is reference
     bool ref_call(const Genotype& g) {
-        if (g.first == '.') {
-            return g.second == '.' || g.second == '-';
-        } else if (g.first == '-') {
-            return g.second == '.';
-        }
-        return false;
+        return g.first == "." && (g.second == "." || g.second == "-");
     }
 
     // call is snp
