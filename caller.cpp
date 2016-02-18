@@ -106,7 +106,7 @@ void Caller::call_edge_pileup(const EdgePileup& pileup) {
         pileup.num_reads() <= _max_depth) {
 
         // to do: factor in likelihood?
-        Edge edge = pileup.edge();
+        Edge edge = pileup.edge(); // gcc not happy about passing directly
         _called_edges.insert(NodeSide::pair_from_edge(edge));
     }
 }

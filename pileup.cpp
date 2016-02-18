@@ -112,12 +112,12 @@ bool Pileups::insert_node_pileup(NodePileup* pileup) {
 }
 
 bool Pileups::insert_edge_pileup(EdgePileup* pileup) {
-    EdgePileup* existing = get_edge_pileup(NodeSidePos::pair_from_edge(*pileup->mutable_edge()));
+    EdgePileup* existing = get_edge_pileup(NodeSide::pair_from_edge(*pileup->mutable_edge()));
     if (existing != NULL) {
         merge_edge_pileups(*existing, *pileup);
         delete pileup;
     } else {
-        _edge_pileups[NodeSidePos::pair_from_edge(*pileup->mutable_edge())] = pileup;
+        _edge_pileups[NodeSide::pair_from_edge(*pileup->mutable_edge())] = pileup;
     }
     return existing == NULL;
 }
@@ -134,6 +134,7 @@ void Pileups::compute_from_alignment(VG& graph, Alignment& alignment) {
     // keep track of read offset of mapping array element i
     vector<int> in_read_offsets(path.mapping_size());
     vector<int> out_read_offsets(path.mapping_size());
+    _running_del = NULL;
     for (int i = 0; i < path.mapping_size(); ++i) {
         const Mapping& mapping = path.mapping(i);
         if (graph.has_node(mapping.position().node_id())) {
@@ -175,8 +176,8 @@ void Pileups::compute_from_alignment(VG& graph, Alignment& alignment) {
         if (rank1_idx > 0 || rank2_idx > 0) {
             auto& m1 = path.mapping(rank1_idx);
             auto& m2 = path.mapping(rank2_idx);
-            auto s1 = NodeSidePos(m1.position().node_id(), (m1.is_reverse() ? false : true));
-            auto s2 = NodeSidePos(m2.position().node_id(), (m2.is_reverse() ? true : false));
+            auto s1 = NodeSide(m1.position().node_id(), (m1.is_reverse() ? false : true));
+            auto s2 = NodeSide(m2.position().node_id(), (m2.is_reverse() ? true : false));
             // no quality gives a free pass from quality filter
             char edge_qual = 127;
             if (!alignment.quality().empty()) {
@@ -185,7 +186,7 @@ void Pileups::compute_from_alignment(VG& graph, Alignment& alignment) {
                 edge_qual = min(from_qual, to_qual);
             }
             if (edge_qual >= _min_quality) {
-                EdgePileup* edge_pileup = get_create_edge_pileup(pair<NodeSidePos, NodeSidePos>(s1, s2));
+                EdgePileup* edge_pileup = get_create_edge_pileup(pair<NodeSide, NodeSide>(s1, s2));
                 cerr << "adding ep " << s1 << " --> " << s2 << endl;
                 edge_pileup->set_num_reads(edge_pileup->num_reads() + 1);
                 if (!alignment.quality().empty()) {
@@ -221,6 +222,7 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
     
     // ***** MATCH *****
     if (edit.from_length() == edit.to_length()) {
+        _running_del = NULL;
         assert (edit.from_length() > 0);
         make_match(seq, edit.from_length(), aln_reverse);
         assert(seq.length() == edit.from_length());            
@@ -259,6 +261,7 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
     }
     // ***** INSERT *****
     else if (edit.from_length() < edit.to_length()) {
+        _running_del = NULL;
         if (pass_filter(alignment, read_offset, mismatch_counts)) {
             if (seq_reverse) {
                 reverse_complement(seq);
@@ -308,14 +311,31 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
             assert(edit.sequence().empty());
             int64_t del_start = !map_reverse ? node_offset :
                 node_offset - edit.from_length() + 1;
-            // todo: eat up all adjacent deletes
-            // todo: figure out offsets
-            NodeSidePos del_from(node.id(), true, node_offset);
-            NodeSidePos del_to(node.id(), false, node_offset + edit.from_length());
-            EdgePileup* edge_pileup = get_create_edge_pileup(make_pair(del_from, del_to));
-            edge_pileup->set_num_reads(edge_pileup->num_reads() + 1);
-            if (!alignment.quality().empty()) {
-                *edge_pileup->mutable_qualities() += alignment.quality()[read_offset];
+            seq = node.sequence().substr(del_start, edit.from_length());
+            // add deletion string to bases field
+            if (seq_reverse) {
+                reverse_complement(seq);
+            }            
+            make_delete(seq, aln_reverse);
+            if (_running_del != NULL) {
+                // we are appending onto existing entry
+                append_delete(*_running_del->mutable_bases(), seq);
+            } else {
+                BasePileup* base_pileup = get_create_base_pileup(pileup, node_offset);
+                _running_del = base_pileup;
+
+                // reference_base if empty
+                if (base_pileup->num_bases() == 0) {
+                    base_pileup->set_ref_base(node.sequence()[node_offset]);
+                } else {
+                    assert(base_pileup->ref_base() == node.sequence()[node_offset]);
+                }
+                base_pileup->mutable_bases()->append(seq);
+                if (!alignment.quality().empty()) {
+                    *base_pileup->mutable_qualities() += alignment.quality()[read_offset];
+                }
+                // pileup size increases by 1
+                base_pileup->set_num_bases(base_pileup->num_bases() + 1);                
             }
         }
         int64_t delta = map_reverse ? -edit.from_length() : edit.from_length();
