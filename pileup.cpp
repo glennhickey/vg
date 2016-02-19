@@ -91,6 +91,32 @@ void Pileups::for_each_edge_pileup(const function<void(EdgePileup&)>& lambda) {
     }
 }
 
+EdgePileup* Pileups::get_edge_pileup(pair<NodeSide, NodeSide> sides) {
+    if (sides.first < sides.second) {
+        swap(sides.first, sides.second);
+    }
+    auto p = _edge_pileups.find(sides);
+    return p != _edge_pileups.end() ? p->second : NULL;
+}
+            
+// get a pileup.  if it's null, create a new one and insert it.
+EdgePileup* Pileups::get_create_edge_pileup(pair<NodeSide, NodeSide> sides) {
+    if (sides.first < sides.second) {
+        swap(sides.first, sides.second);
+    }
+    EdgePileup* p = get_edge_pileup(sides);
+    if (p == NULL) {
+        p = new EdgePileup();
+        p->mutable_edge()->set_from(sides.first.node);
+        p->mutable_edge()->set_from_start(!sides.first.is_end);
+        p->mutable_edge()->set_to(sides.second.node);
+        p->mutable_edge()->set_to_end(sides.second.is_end);
+        _edge_pileups[sides] = p;
+    }
+    return p;
+}
+
+
 void Pileups::extend(Pileup& pileup) {
     for (int i = 0; i < pileup.node_pileups_size(); ++i) {
         insert_node_pileup(new NodePileup(pileup.node_pileups(i)));
@@ -316,7 +342,7 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
             if (seq_reverse) {
                 reverse_complement(seq);
             }            
-            make_delete(seq, aln_reverse);
+            make_delete(seq, node.id(), node_offset, aln_reverse);
             if (_running_del != NULL) {
                 // we are appending onto existing entry
                 // deletes are special in that they can span multiple nodes/edits
@@ -516,8 +542,8 @@ void Pileups::parse_base_offsets(const BasePileup& bp,
     // need base_offset to get position of appropriate token in bases string
     int base_offset = 0;
     for (int i = 0; i < bp.num_bases(); ++i) {
-        // indel
-        if (bases[base_offset] == '+' || bases[base_offset] == '-') {
+        // insert
+        if (bases[base_offset] == '+') {
             offsets.push_back(make_pair(base_offset, i < quals.length() ? i : -1));
             int lf = base_offset + 1;
             int rf = lf;
@@ -529,6 +555,19 @@ void Pileups::parse_base_offsets(const BasePileup& bp,
             ss >> indel_len;
             // ex: +5aaaaa.  rf = lf = 1. indel_len = 5 -> increment 2+0+5=7
             base_offset += 1 + rf - lf + indel_len;
+        // delete
+        } else if (bases[base_offset] == '-') {
+            offsets.push_back(make_pair(base_offset, i < quals.length() ? i : -1));
+            int lf = base_offset + 1;
+            // eat up four semicolons
+            for (int sc_count = 0; sc_count < 4; ++lf) {
+                if (bases[lf] == ';') {
+                    ++sc_count;
+                }
+            }
+            // and last number
+            for (; bases[lf] >= '0' && bases[lf] <= '9'; ++lf);
+            base_offset = lf;
         }
         // match / snp
         else {
@@ -537,6 +576,100 @@ void Pileups::parse_base_offsets(const BasePileup& bp,
         }
     }
     assert(base_offset == bases.length());
+}
+
+// transform case of every character in string
+void Pileups::casify(string& seq, bool is_reverse) {
+    if (is_reverse) {
+        transform(seq.begin(), seq.end(), seq.begin(), ::tolower);
+    } else {
+        transform(seq.begin(), seq.end(), seq.begin(), ::toupper);
+    }
+}
+
+// make the sam pileup style token
+void Pileups::make_match(string& seq, int64_t from_length, bool is_reverse) {
+    if (seq.length() == 0) {
+        seq = string(from_length, is_reverse ? ',' : '.');
+    } else {
+        casify(seq, is_reverse);
+    }
+}
+
+void Pileups::make_insert(string& seq, bool is_reverse) {
+    casify(seq, is_reverse);
+    stringstream ss;
+    ss << "+" << seq.length() << seq; 
+    seq = ss.str();
+}
+
+void Pileups::make_delete(string& seq, int node_id, int node_offset, bool is_reverse) {
+    int delta = is_reverse ? -seq.length() - 1 : seq.length() + 1;
+    int dest_offset = node_offset + delta;
+    assert(dest_offset >= 0);
+    stringstream ss;
+    // format : -length;from_start;dest_id;dest_offset;to_end
+    ss << "-" << seq.length() << ";" << is_reverse << ";" << node_id << ";"
+       << dest_offset << ";" << is_reverse;
+
+    seq = ss.str();
+}
+
+void Pileups::append_delete(string& bases, const string& seq) {
+    cerr <<"appending " << seq << " to " << bases << endl;
+    // this could be streamlined a bit to avoid reparsing
+    int d_start = bases.rfind('-');
+    assert(d_start >= 0);
+    // get existing delete at end of bases
+    int old_len, old_offset, old_id;
+    bool old_from_start, old_to_end;
+    parse_delete(bases.substr(d_start), old_len, old_from_start, old_id, old_offset, old_to_end);
+
+    // parse new delete
+    int new_len, new_offset, new_id;
+    bool new_from_start, new_to_end;
+    parse_delete(seq, new_len, new_from_start, new_id, new_offset, new_to_end);
+
+    // add together
+    stringstream merged_del;
+    // should be able to use make_delete or something for this...
+    merged_del << "-" << (old_len + new_len) << ";" << old_from_start << ";" << new_id << ";"
+               << new_offset << ";" << new_to_end;
+    
+    bases.erase(d_start);
+    bases.append(merged_del.str());
+}
+        
+void Pileups::parse_insert(const string& tok, int& len, string& seq, bool& is_reverse) {
+    assert(tok[0] == '+');
+    int i = 1;
+    for (; tok[i] >= '0' && tok[i] <= '9'; ++i);
+    stringstream ss;
+    ss << tok.substr(1, i - 1);
+    ss >> len;
+    seq = tok.substr(i, tok.length() - i);
+    is_reverse = ::islower(seq[0]);
+}
+
+void Pileups::parse_delete(const string& tok, int& len, bool& from_start, int& to_id, int& to_offset,
+                           bool& to_end)
+{
+    cerr << " tok " << tok << endl;
+    assert(tok[0] == '-');
+    vector<string> toks;
+    split_delims(tok, ";", toks);
+    assert(toks.size() == 5);
+    len = -atoi(toks[0].c_str());
+    from_start = toks[1] != "0";
+    to_id = atoi(toks[2].c_str());
+    to_offset = atoi(toks[3].c_str());
+    to_end = toks[4] != "0";
+}
+    
+bool Pileups::base_equal(char c1, char c2, bool is_reverse) {
+    char t1 = ::toupper(c1);
+    char t2 = ::toupper(c2);
+    return is_reverse ? t1 == reverse_complement(t2) : t1 == t2;
 }
 
 char Pileups::extract_match(const BasePileup& bp, int offset) {

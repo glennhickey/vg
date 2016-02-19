@@ -128,30 +128,10 @@ public:
     void for_each_edge_pileup(const function<void(EdgePileup&)>& lambda);
 
     // search hash table for edge id
-    EdgePileup* get_edge_pileup(pair<NodeSide, NodeSide> sides) {
-        if (sides.first < sides.second) {
-            swap(sides.first, sides.second);
-        }
-        auto p = _edge_pileups.find(sides);
-        return p != _edge_pileups.end() ? p->second : NULL;
-    }
+    EdgePileup* get_edge_pileup(pair<NodeSide, NodeSide> sides);
             
     // get a pileup.  if it's null, create a new one and insert it.
-    EdgePileup* get_create_edge_pileup(pair<NodeSide, NodeSide> sides) {
-        if (sides.first < sides.second) {
-            swap(sides.first, sides.second);
-        }
-        EdgePileup* p = get_edge_pileup(sides);
-        if (p == NULL) {
-            p = new EdgePileup();
-            p->mutable_edge()->set_from(sides.first.node);
-            p->mutable_edge()->set_from_start(!sides.first.is_end);
-            p->mutable_edge()->set_to(sides.second.node);
-            p->mutable_edge()->set_to_end(sides.second.is_end);
-            _edge_pileups[sides] = p;
-        }
-        return p;
-    }
+    EdgePileup* get_create_edge_pileup(pair<NodeSide, NodeSide> sides);
     
     void extend(Pileup& pileup);
 
@@ -224,75 +204,21 @@ public:
                                    vector<pair<int, int> >& offsets);
 
     // transform case of every character in string
-    static void casify(string& seq, bool is_reverse) {
-        if (is_reverse) {
-            transform(seq.begin(), seq.end(), seq.begin(), ::tolower);
-        } else {
-            transform(seq.begin(), seq.end(), seq.begin(), ::toupper);
-        }
-    }
+    static void casify(string& seq, bool is_reverse);
 
     // make the sam pileup style token
-    static void make_match(string& seq, int64_t from_length, bool is_reverse) {
-        if (seq.length() == 0) {
-            seq = string(from_length, is_reverse ? ',' : '.');
-        } else {
-            casify(seq, is_reverse);
-        }
-    }
-    static void make_insert(string& seq, bool is_reverse) {
-        casify(seq, is_reverse);
-        stringstream ss;
-        ss << "+" << seq.length() << seq; 
-        seq = ss.str();
-    }
-    static void make_delete(string& seq, bool is_reverse) {
-        casify(seq, is_reverse);
-        stringstream ss;
-        ss << "-" << seq.length() << seq;
-        seq = ss.str();
-    }
-    static void append_delete(string& bases, const string& seq) {
-        // extract sequence;
-        char p;
-        int len;
-        bool r;
-        string dna;
-        parse_indel(seq, p, len, dna, r);
-        
-        // find last delete in bases
-        int x = bases.find_last_of("-");
-        string prev_dna;
-        parse_indel(bases.substr(x, bases.length() - x), p, len, prev_dna, r);
-        
-        // merge
-        prev_dna += dna;
-        string slen;
-        stringstream ss;
-        ss << prev_dna.length();
-        ss >> slen;
-        
-        // replace
-        bases = bases.substr(0, x) + "-" + slen + prev_dna;
-    }
-        
-    static void parse_indel(const string& tok, char& pm, int& len, string& seq, bool& is_reverse) {
-        pm = tok[0];
-        int i = 1;
-        for (; tok[i] >= '0' && tok[i] <= '9'; ++i);
-        stringstream ss;
-        ss << tok.substr(1, i - 1);
-        ss >> len;
-        seq = tok.substr(i, tok.length() - i);
-        is_reverse = ::islower(seq[0]);
-    }
+    static void make_match(string& seq, int64_t from_length, bool is_reverse);
+    static void make_insert(string& seq, bool is_reverse);
+    static void make_delete(string& seq, int node_id, int node_offset, bool is_reverse);
 
-    static bool base_equal(char c1, char c2, bool is_reverse) {
-        char t1 = ::toupper(c1);
-        char t2 = ::toupper(c2);
-        return is_reverse ? t1 == reverse_complement(t2) : t1 == t2;
-    }
+    static void append_delete(string& bases, const string& seq);
+        
+    static void parse_insert(const string& tok, int& len, string& seq, bool& is_reverse);
+    static void parse_delete(const string& tok, int& len, bool& from_start, int& to_id, int& to_offset,
+                             bool& to_end);
 
+    static bool base_equal(char c1, char c2, bool is_reverse);
+    
     // get a pileup value on forward strand
     static char extract_match(const BasePileup& bp, int offset);
 
