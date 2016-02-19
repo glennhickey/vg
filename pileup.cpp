@@ -319,6 +319,7 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
             make_delete(seq, aln_reverse);
             if (_running_del != NULL) {
                 // we are appending onto existing entry
+                // deletes are special in that they can span multiple nodes/edits
                 append_delete(*_running_del->mutable_bases(), seq);
             } else {
                 BasePileup* base_pileup = get_create_base_pileup(pileup, node_offset);

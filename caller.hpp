@@ -17,6 +17,27 @@ namespace vg {
 
 using namespace std;
 
+// We need to break apart nodes but remember where they came from to update edges
+// Wrap all this up in this class.  Store pairs of nodes since we can make up to
+// two new nodes for any position (diploid assumption throughout). The first
+// pair element is mandatory and second optional, and they both need to be
+// same length if they both exist. 
+struct NodeDivider {
+    // offset in original graph node -> up to 2 nodes in call graph
+    typedef map<int, pair<Node*, Node*> > NodeMap;
+    // Node id in original graph to map above
+    typedef hash_map<int, NodeMap> NodeHash;
+    NodeHash index;
+    // map given node to offset i of node with id in original graph
+    // this function can never handle overlaps (and should only be called before break_end)
+    void add_fragment(const Node* orig_node, int offset, Node* subnode);
+    // break node if necessary so that we can attach edge at specified side
+    // this function wil return NULL if there's no node covering the given location
+    pair<Node*, Node*> break_end(const Node* orig_node, VG* graph, int offset, bool left_side);
+    // erase everything (but don't free any Node pointers, they belong to the graph)
+    void clear();
+};
+
 // Super simple variant caller, for now written to get bakeoff evaluation bootstrapped.
 // Idea: Idependently process Pileup records, using simple model to make calls that
 //       take into account read errors with diploid assumption.  
@@ -74,11 +95,9 @@ public:
     const Node* _node;
     // max id in call_graph
     int64_t _max_id;
-    // node id map to convert edges
-    typedef pair<int64_t, int64_t> NodePair;
-    typedef hash_map<int64_t, NodePair> NodeMap;
-    NodeMap _start_node_map;
-    NodeMap _end_node_map;
+    // link called nodes back to the original graph. needed
+    // to figure out where edges go
+    NodeDivider _node_divider;
     unordered_set<int64_t> _visited_nodes;
     unordered_set<pair<NodeSide, NodeSide> > _called_edges;
 
@@ -141,13 +160,13 @@ public:
     // node.  
     void create_node_calls(const NodePileup& np);
 
-    // create augmented edges connecting the new nodes created by create_node_calls
-    void create_edges(list<Node*> nodes1, list<Node*> nodes2, list<int> offsets1,
+    // create augmented edges (except deletes) connecting the new nodes created by create_node_calls
+    void create_augmented_edges(list<Node*> nodes1, list<Node*> nodes2, list<int> offsets1,
                       list<int> offsets2);
 
     // add edges implied by augmented deletes, breaking nodes they connect if necessary
-    void create_deletes(list<Node*> nodes1, list<Node*> nodes2, list<int> offsets1,
-                        list<int> offsets2);
+    void create_delete_edges(list<Node*> nodes1, list<Node*> nodes2, list<int> offsets1,
+                             list<int> offsets2);
 
     // make a path corresponding to a snp in the call grpah
     void create_snp_path(int64_t snp_node, bool secondary_snp);
