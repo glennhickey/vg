@@ -100,6 +100,10 @@ public:
     NodeDivider _node_divider;
     unordered_set<int64_t> _visited_nodes;
     unordered_set<pair<NodeSide, NodeSide> > _called_edges;
+    // deletes can don't necessarily need to be in incident to node ends
+    // so we throw in an offset into the mix. 
+    typedef pair<NodeSide, int> NodeOffSide;
+    unordered_set<pair<NodeOffSide, NodeOffSide> > _augmented_edges;
 
     // used to favour homozygous genotype (r from MAQ paper)
     double _het_log_prior;
@@ -160,13 +164,13 @@ public:
     // node.  
     void create_node_calls(const NodePileup& np);
 
-    // create augmented edges (except deletes) connecting the new nodes created by create_node_calls
-    void create_augmented_edges(list<Node*> nodes1, list<Node*> nodes2, list<int> offsets1,
-                      list<int> offsets2);
+    void create_augmented_edge(Node* node1, int from_offset, bool left_side1,
+                               Node* node2, int to_offset, bool left_side2);
 
-    // add edges implied by augmented deletes, breaking nodes they connect if necessary
-    void create_delete_edges(list<Node*> nodes1, list<Node*> nodes2, list<int> offsets1,
-                             list<int> offsets2);
+
+    // add snp and insert edgers to list connecting the new nodes created by create_node_calls
+    void create_snp_insert_edges(list<Node*> nodes1, list<Node*> nodes2, list<int> offsets1,
+                      list<int> offsets2);
 
     // make a path corresponding to a snp in the call grpah
     void create_snp_path(int64_t snp_node, bool secondary_snp);

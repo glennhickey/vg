@@ -57,6 +57,8 @@ void Caller::clear() {
     _call_graph = VG();
     _node_divider.clear();
     _visited_nodes.clear();
+    _called_edges.clear();
+    _augmented_edges.clear();
 }
 
 void Caller::write_call_graph(ostream& out, bool json) {
@@ -111,6 +113,7 @@ void Caller::call_edge_pileup(const EdgePileup& pileup) {
 }
 
 void Caller::update_call_graph() {
+    
     // if we're leaving uncalled nodes, add'em:
     if (_leave_uncalled) {
         function<void(Node*)> add_node = [&](Node* node) {
@@ -130,38 +133,33 @@ void Caller::update_call_graph() {
         if (!_leave_uncalled && _called_edges.find(sides) == _called_edges.end()) {
             return;
         }
+        
         Node* side1 = _graph->get_node(sides.first.node);
         Node* side2 = _graph->get_node(sides.second.node);
         cerr << "Find Edge " << pb2json(*edge) << " gives ";
         // find up to two nodes matching side1 in the call graph
         int from_offset = edge->from_start() ? 0 : side1->sequence().length() - 1;
         int to_offset = edge->to_end() ? side2->sequence().length() - 1 : 0;
-        pair<Node*, Node*> call_sides1 = _node_divider.break_end(side1, &_call_graph, from_offset,
-                                                                 !sides.first.is_end);
-        pair<Node*, Node*> call_sides2 = _node_divider.break_end(side2, &_call_graph, to_offset,
-                                                                 !sides.second.is_end);
-        cerr << call_sides1.first << "/" << call_sides1.second << " ; "
-        << call_sides2.first << "/" << call_sides2.second << endl;
-        // make up to four edges connecting them in the call graph
-        if (call_sides1.first != NULL && call_sides2.first != NULL) {
-            _call_graph.create_edge(call_sides1.first, call_sides2.first,
-                                    edge->from_start(), edge->to_end());
-        }
-        if (call_sides1.first != NULL && call_sides2.second != NULL) {
-            _call_graph.create_edge(call_sides1.first, call_sides2.second,
-                                    edge->from_start(), edge->to_end());
-        }
-        if (call_sides1.second != NULL && call_sides2.first != NULL) {
-            _call_graph.create_edge(call_sides1.second, call_sides2.first,
-                                    edge->from_start(), edge->to_end());
-        }
-        if (call_sides1.second != NULL && call_sides2.second != NULL) {
-            _call_graph.create_edge(call_sides1.second, call_sides2.second,
-                                    edge->from_start(), edge->to_end());
-        }            
-    };
+                                 
+        create_augmented_edge(side1, from_offset, !sides.first.is_end,
+                              side2, to_offset, !sides.second.is_end);
+    };            
     _graph->for_each_edge(map_edge);
 
+    // now do the same for the augmented edges from the things we called
+    for (auto& i : _augmented_edges) {
+        NodeOffSide os1 = i.first;
+        Node* node1 = _graph->get_node(os1.first.node);
+        int from_offset = os1.second;
+        bool left1 = !os1.first.is_end;
+        NodeOffSide os2 = i.second;
+        Node* node2 = _graph->get_node(os2.first.node);
+        int to_offset = os2.second;
+        bool left2 = !os2.first.is_end;
+
+        create_augmented_edge(node1, from_offset, left1, node2, to_offset, left2);
+    }
+    
     // make sure paths are saved
     _call_graph.paths.rebuild_node_mapping();
     _call_graph.paths.rebuild_mapping_aux();
@@ -172,9 +170,37 @@ void Caller::update_call_graph() {
     //_call_graph.compact_ids();
 }
 
+void Caller::create_augmented_edge(Node* node1, int from_offset, bool left_side1,
+                                   Node* node2, int to_offset, bool left_side2) {
+    
+    pair<Node*, Node*> call_sides1 = _node_divider.break_end(node1, &_call_graph, from_offset,
+                                                             left_side1);
+    pair<Node*, Node*> call_sides2 = _node_divider.break_end(node2, &_call_graph, to_offset,
+                                                             left_side2);
+    cerr << call_sides1.first << "/" << call_sides1.second << " ; "
+         << call_sides2.first << "/" << call_sides2.second << endl;
+    // make up to four edges connecting them in the call graph
+    if (call_sides1.first != NULL && call_sides2.first != NULL) {
+        _call_graph.create_edge(call_sides1.first, call_sides2.first,
+                                left_side1, !left_side2);
+    }
+    if (call_sides1.first != NULL && call_sides2.second != NULL) {
+        _call_graph.create_edge(call_sides1.first, call_sides2.second,
+                                left_side1, !left_side2);
+    }
+    if (call_sides1.second != NULL && call_sides2.first != NULL) {
+        _call_graph.create_edge(call_sides1.second, call_sides2.first,
+                                left_side1, !left_side2);
+    }
+    if (call_sides1.second != NULL && call_sides2.second != NULL) {
+        _call_graph.create_edge(call_sides1.second, call_sides2.second,
+                                left_side1, !left_side2);    
+    }
+}
+
 void Caller::call_base_pileup(const NodePileup& np, int64_t offset) {
     const BasePileup& bp = np.base_pileup(offset);
-    
+
     // parse the pilueup structure
     vector<pair<int, int> > base_offsets;
     Pileups::parse_base_offsets(bp, base_offsets);
@@ -458,7 +484,7 @@ void Caller::create_node_calls(const NodePileup& np) {
                         nodes1.push_back(node);
                         offsets1.push_back(cur);
                     }
-                    else if (call1[0] != '-' && call1[0] != '+') {
+                    else if (call1[0] != '-' && call1[0] != '+' && call1[0] != '-') {
                         // snp base
                         string new_seq = call1;
                         Node* node = _call_graph.create_node(new_seq, ++_max_id);
@@ -484,6 +510,24 @@ void Caller::create_node_calls(const NodePileup& np) {
                             offsets2.push_back(-1);
                         }
                     }
+                    else if (call1[0] == '-' && call1.length() > 1) {
+                        // delete
+                        int del_len;
+                        bool from_start;
+                        int from_id = _node->id();
+                        int from_offset = cur;
+                        int to_id;
+                        int to_offset;
+                        bool to_end;
+                        Pileups::parse_delete(call1, del_len, from_start, to_id, to_offset, to_end);
+                        NodeOffSide s1(NodeSide(from_id, !from_start), from_offset);
+                        NodeOffSide s2(NodeSide(to_id, to_end), to_offset);
+                        // we're just going to update the divider here, since all
+                        // edges get done at the end
+                        _node_divider.break_end(_node, _graph, from_offset, from_start);
+                        _node_divider.break_end(_graph->get_node(to_id), _graph, to_offset, !to_end);
+                        _augmented_edges.insert(make_pair(s1, s2));
+                    }
                 };
 
                 // apply same logic to both calls, updating opposite arrays
@@ -504,14 +548,12 @@ void Caller::create_node_calls(const NodePileup& np) {
         }
     }
 
-    create_augmented_edges(nodes1, nodes2, offsets1, offsets2);
-
-    create_delete_edges(nodes1, nodes2, offsets1, offsets2);
+    create_snp_insert_edges(nodes1, nodes2, offsets1, offsets2);
 }
  
 
-void Caller::create_augmented_edges(list<Node*> nodes1, list<Node*> nodes2, list<int> offsets1,
-                                    list<int> offsets2) {
+void Caller::create_snp_insert_edges(list<Node*> nodes1, list<Node*> nodes2, list<int> offsets1,
+                                     list<int> offsets2) {
  
     assert(nodes1.size() == nodes2.size());
 
@@ -525,27 +567,29 @@ void Caller::create_augmented_edges(list<Node*> nodes1, list<Node*> nodes2, list
     for (int i = 0; i < nodes1.size() - 1; ++i, ++i1, ++i2, ++j1, ++j2) {
         if (*i1 != NULL) {
             if (*j1 != NULL) {
-                _call_graph.create_edge(*i1, *j1);
+                NodeOffSide s1(((*i1)->id(), true), (*i1)->sequence().length() - 1);
+                NodeOffSide s2(((*j1)->id(), false), 0);
+                _augmented_edges.insert(make_pair(s1, s2));
             }
             if (*j2 != NULL) {
-                _call_graph.create_edge(*i1, *j2);
+                NodeOffSide s1(((*i1)->id(), true), (*i1)->sequence().length() - 1);
+                NodeOffSide s2(((*j2)->id(), false), 0);
+                _augmented_edges.insert(make_pair(s1, s2));
             }
         }
         if (*i2 != NULL) {
             if (*j2 != NULL) {
-                _call_graph.create_edge(*i2, *j2);
+                NodeOffSide s1(((*i2)->id(), true), (*i2)->sequence().length() - 1);
+                NodeOffSide s2(((*j2)->id(), false), 0);
+                _augmented_edges.insert(make_pair(s1, s2));
             }
             if (*j1 != NULL) {
-                _call_graph.create_edge(*i2, *j1);
+                NodeOffSide s1(((*i2)->id(), true), (*i2)->sequence().length() - 1);
+                NodeOffSide s2(((*j1)->id(), false), 0);
+                _augmented_edges.insert(make_pair(s1, s2));
             }
         }
     }
-}
-
-// add edges implied by augmented deletes, breaking nodes they connect if necessary
-void Caller::create_delete_edges(list<Node*> nodes1, list<Node*> nodes2, list<int> offsets1,
-                                 list<int> offsets2) {
-    
 }
 
 

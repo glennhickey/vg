@@ -342,7 +342,7 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
             if (seq_reverse) {
                 reverse_complement(seq);
             }            
-            make_delete(seq, node.id(), node_offset, aln_reverse);
+            make_delete(seq, node.id(), node_offset, map_reverse);
             if (_running_del != NULL) {
                 // we are appending onto existing entry
                 // deletes are special in that they can span multiple nodes/edits
@@ -537,13 +537,13 @@ void Pileups::parse_base_offsets(const BasePileup& bp,
     const string& quals = bp.qualities();
     const string& bases = bp.bases();
     char ref_base = ::toupper(bp.ref_base());
-
     // we can use i to index the quality for the ith row of pileup, but
     // need base_offset to get position of appropriate token in bases string
     int base_offset = 0;
     for (int i = 0; i < bp.num_bases(); ++i) {
         // insert
         if (bases[base_offset] == '+') {
+            cerr << "parse ins" << endl;
             offsets.push_back(make_pair(base_offset, i < quals.length() ? i : -1));
             int lf = base_offset + 1;
             int rf = lf;
@@ -557,6 +557,7 @@ void Pileups::parse_base_offsets(const BasePileup& bp,
             base_offset += 1 + rf - lf + indel_len;
         // delete
         } else if (bases[base_offset] == '-') {
+            cerr << "parse del" << endl;
             offsets.push_back(make_pair(base_offset, i < quals.length() ? i : -1));
             int lf = base_offset + 1;
             // eat up four semicolons
@@ -571,6 +572,7 @@ void Pileups::parse_base_offsets(const BasePileup& bp,
         }
         // match / snp
         else {
+            cerr << "parse snp " << endl;
             offsets.push_back(make_pair(base_offset, i < quals.length() ? i : -1));
             ++base_offset;
         }
