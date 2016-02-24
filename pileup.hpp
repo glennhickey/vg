@@ -20,8 +20,9 @@ using namespace std;
 class Pileups {
 public:
     
-    Pileups(int min_quality = 0, int max_mismatches = 1, int window_size = 0,
+    Pileups(VG* graph, int min_quality = 0, int max_mismatches = 1, int window_size = 0,
             double max_insert_frac_read_end = 0.1) :
+        _graph(graph),
         _min_quality(min_quality),
         _max_mismatches(max_mismatches),
         _window_size(window_size),
@@ -30,6 +31,7 @@ public:
     // copy constructor
     Pileups(const Pileups& other) {
         if (this != &other) {
+            _graph = other._graph;
             for (auto& p : other._node_pileups) {
                 insert_node_pileup(new NodePileup(*p.second));
             }
@@ -42,6 +44,7 @@ public:
 
     // move constructor
     Pileups(Pileups&& other) noexcept {
+        _graph = other._graph;
         _node_pileups = other._node_pileups;
         other._node_pileups.clear();
         _min_quality = other._min_quality;
@@ -59,6 +62,7 @@ public:
 
     // move assignment operator
     Pileups& operator=(Pileups&& other) noexcept {
+        _graph = other._graph;
         swap(_node_pileups, other._node_pileups);
         other._node_pileups.clear();
         _min_quality = other._min_quality;
@@ -77,6 +81,8 @@ public:
     typedef hash_map<int64_t, NodePileup*> NodePileupHash;
     typedef pair_hash_map<pair<NodeSide, NodeSide>, EdgePileup*> EdgePileupHash;
 
+    VG* _graph;
+    
     // This maps from Position to Pileup.
     NodePileupHash _node_pileups;
     EdgePileupHash _edge_pileups;
@@ -141,7 +147,7 @@ public:
     bool insert_edge_pileup(EdgePileup* edge_pileup);
     
     // create / update all pileups from a single alignment
-    void compute_from_alignment(VG& graph, Alignment& alignment);
+    void compute_from_alignment(Alignment& alignment);
 
     // create / update all pileups from an edit (called by above).
     // query stores the current position (and nothing else).  
@@ -169,6 +175,14 @@ public:
     // if two positions collide, they are merged.
     // other will be left empty. this is returned
     Pileups& merge(Pileups& other);
+
+    // deletions are stored as edges.  equivalent deletions can wind
+    // up in two different pileups, depending on their representation
+    // (A <-> B vs B <-> A).  Unfortunately, this requires a global
+    // pass to insure that all deletions are expressed in a "canonical"
+    // form (in this case, this means the lowest/leftmost node/offset)
+    void move_non_canonical_deletes();
+    void move_non_canonical_deletes(NodePileup* node_pileup);
 
     // merge p2 into p1 and return 1. p2 is left an empty husk
     static BasePileup& merge_base_pileups(BasePileup& p1, BasePileup& p2);
@@ -210,6 +224,7 @@ public:
     static void make_match(string& seq, int64_t from_length, bool is_reverse);
     static void make_insert(string& seq, bool is_reverse);
     static void make_delete(string& seq, int node_id, int node_offset, bool is_reverse);
+    static void make_delete(string& seq, int len, int from_start, int to_id, int to_end, int to_offset);
 
     static void append_delete(string& bases, const string& seq);
         

@@ -826,10 +826,10 @@ int main_pileup(int argc, char** argv) {
     if (show_progress) {
         cerr << "Computing pileups" << endl;
     }
-    vector<Pileups> pileups(thread_count, Pileups(min_quality, max_mismatches, window_size));
+    vector<Pileups> pileups(thread_count, Pileups(graph, min_quality, max_mismatches, window_size));
     function<void(Alignment&)> lambda = [&pileups, &graph](Alignment& aln) {
         int tid = omp_get_thread_num();
-        pileups[tid].compute_from_alignment(*graph, aln);
+        pileups[tid].compute_from_alignment(aln);
     };
     stream::for_each_parallel(*alignment_stream, lambda);
 
@@ -840,6 +840,13 @@ int main_pileup(int argc, char** argv) {
     for (int i = 1; i < pileups.size(); ++i) {
         pileups[0].merge(pileups[i]);
     }
+
+    // postprocess deletion edges
+    if (show_progress && pileups.size() > 1) {
+        cerr << "Canonicalizing deletions" << endl;
+    }
+    pileups[0].move_non_canonical_deletes();
+    
     // spit out the pileup
     if (show_progress) {
         cerr << "Writing pileups" << endl;

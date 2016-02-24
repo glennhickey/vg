@@ -148,13 +148,13 @@ bool Pileups::insert_edge_pileup(EdgePileup* pileup) {
     return existing == NULL;
 }
 
-void Pileups::compute_from_alignment(VG& graph, Alignment& alignment) {
+void Pileups::compute_from_alignment(Alignment& alignment) {
     // note to self: alignment.is_reverse() just means the read
     // got reversed when put into sequence.  
     const Path& path = alignment.path();
     int64_t read_offset = 0;
     vector<int> mismatch_counts;
-    count_mismatches(graph, path, mismatch_counts);
+    count_mismatches(*_graph, path, mismatch_counts);
     // element i = location of rank i in the mapping array
     vector<int> ranks(path.mapping_size() + 1, -1);
     // keep track of read offset of mapping array element i
@@ -163,8 +163,8 @@ void Pileups::compute_from_alignment(VG& graph, Alignment& alignment) {
     _running_del = NULL;
     for (int i = 0; i < path.mapping_size(); ++i) {
         const Mapping& mapping = path.mapping(i);
-        if (graph.has_node(mapping.position().node_id())) {
-            const Node* node = graph.get_node(mapping.position().node_id());
+        if (_graph->has_node(mapping.position().node_id())) {
+            const Node* node = _graph->get_node(mapping.position().node_id());
             NodePileup* pileup = get_create_node_pileup(node);
             int64_t node_offset = mapping.position().offset();
             in_read_offsets[i] = read_offset;
@@ -491,6 +491,61 @@ Pileups& Pileups::merge(Pileups& other) {
     return *this;
 }
 
+void Pileups::move_non_canonical_deletes() {
+    function<void(NodePileup&)> lambda = [this](NodePileup& pileup) {
+        move_non_canonical_deletes(&pileup);
+    };
+    for_each_node_pileup(lambda);
+}
+        
+void Pileups::move_non_canonical_deletes(NodePileup* node_pileup) {
+    for (int offset = 0; offset < node_pileup->base_pileup_size(); ++offset) {
+        BasePileup* base_pileup = get_base_pileup(*node_pileup, offset);
+        // should we try speeding this up?
+        vector<pair<int, int> > bp_offsets;
+        int delta = 0;
+        int qdelta = 0;
+        parse_base_offsets(*base_pileup, bp_offsets);
+        for (auto bpo : bp_offsets) {
+            if (base_pileup->bases()[bpo.first] == '-') {
+                string val = Pileups::extract(*base_pileup, bpo.first - delta);
+                string qual;
+                if (base_pileup->qualities().length() > 0) {
+                    qual = base_pileup->qualities().substr(bpo.second - qdelta, 1);
+                }
+                int len;
+                bool from_start;
+                int to_id;
+                int to_offset;
+                bool to_end;
+                parse_delete(val, len, from_start, to_id, to_offset, to_end);
+                if (pair<int64_t, int64_t>(node_pileup->node_id(), offset) >
+                    pair<int64_t, int64_t>(to_id, to_offset)) {
+                    // remove from node_pileup
+                    base_pileup->mutable_bases()->erase(bpo.first - delta, val.length());
+                    base_pileup->set_num_bases(base_pileup->num_bases() - 1);
+                    if (base_pileup->qualities().length() > 0) {
+                        base_pileup->mutable_qualities()->erase(bpo.first - qdelta, 1);
+                    }
+                    delta += val.length();
+                    ++qdelta;
+                    
+                    // make canonical version by flipping start and end
+                    Node* to_node = _graph->get_node(to_id);
+                    NodePileup* tgt_node_pileup = get_create_node_pileup(to_node);
+                    BasePileup* tgt_base_pileup = get_create_base_pileup(*tgt_node_pileup, to_offset);
+                    string canonical_val;
+                    make_delete(canonical_val, len, to_end, node_pileup->node_id(), offset, from_start);
+                    tgt_base_pileup->mutable_bases()->append(canonical_val);
+                    if (!qual.empty()) {
+                        tgt_base_pileup->mutable_qualities()->append(qual);
+                    }
+                }
+            }
+        }
+    }
+}
+
 BasePileup& Pileups::merge_base_pileups(BasePileup& p1, BasePileup& p2) {
     assert(p1.num_bases() == 0 || p2.num_bases() == 0 ||
            p1.ref_base() == p2.ref_base());
@@ -611,6 +666,12 @@ void Pileups::make_delete(string& seq, int node_id, int node_offset, bool is_rev
     ss << "-" << seq.length() << ";" << is_reverse << ";" << node_id << ";"
        << dest_offset << ";" << is_reverse;
 
+    seq = ss.str();
+}
+
+void Pileups::make_delete(string& seq, int len, int from_start, int to_id, int to_end, int to_offset) {
+    stringstream ss;
+    ss << "-" << len << from_start << ";" << to_id << ";" << to_offset << ";" << to_end;
     seq = ss.str();
 }
 
