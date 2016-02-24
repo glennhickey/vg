@@ -610,9 +610,7 @@ void Caller::create_node_calls(const NodePileup& np) {
             }
 
             // inserts done separate at end since they take start between cur and next
-            function<void(list<Node*>&, list<Node*>&, list<int>&, list<int>&, string&, string&)>  call_inserts =
-                [&](list<Node*>& nodes1, list<Node*>& nodes2, list<int>& offsets1, list<int>& offsets2,
-                    string& ins_call1, string& ins_call2) {
+            function<void(string&, string&)>  call_inserts = [&](string& ins_call1, string& ins_call2) {
                 if (ins_call1[0] == '+') {
                     int ins_len;
                     string ins_seq;
@@ -633,8 +631,8 @@ void Caller::create_node_calls(const NodePileup& np) {
             };
             
             cerr << "ins " << cur << " " << _insert_calls[cur].first << ", " << _insert_calls[cur].second << endl;
-            call_inserts(nodes1, nodes2, offsets1, offsets2, _insert_calls[next-1].first, _insert_calls[next-1].second);
-            call_inserts(nodes2, nodes1, offsets2, offsets1, _insert_calls[next-1].second, _insert_calls[next-1].first);
+            call_inserts(_insert_calls[next-1].first, _insert_calls[next-1].second);
+            call_inserts(_insert_calls[next-1].second, _insert_calls[next-1].first);
                 
             // shift right
             cur = next;
@@ -838,10 +836,10 @@ pair<Node*, Node*> NodeDivider::break_end(const Node* orig_node, VG* graph, int 
 
     cerr << "Break End " << orig_node->id() << " " << offset << " " << left_side
          << " --> ";
-    if (left_side) {
+    if (left_side && new_node1) {
         cerr << pb2json(*new_node1);
         if (new_node2) cerr << " , " << pb2json(*new_node2);
-    } else {
+    } else if (fragment1) {
         cerr << pb2json(*fragment1);
         if (fragment2) cerr << " , " << pb2json(*fragment2);
     } cerr << endl;
