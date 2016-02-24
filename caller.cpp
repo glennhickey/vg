@@ -104,7 +104,7 @@ void Caller::call_node_pileup(const NodePileup& pileup) {
 
     // stream out vcf-like text of calls if desired
     if (_text_calls != NULL) {
-      write_text_calls(pileup);
+        write_text_calls(pileup);
     }
 
     _visited_nodes.insert(_node->id());
@@ -273,6 +273,7 @@ void Caller::call_base_pileup(const NodePileup& np, int64_t offset, bool inserti
     int second_rev_count;
     compute_top_frequencies(bp, base_offsets, top_base, top_count, top_rev_count,
                             second_base, second_count, second_rev_count, insertion);
+    cerr << "top " << top_base <<":" << top_count << " 2nd " << second_base << ":" << second_count;
 
     // note first and second base will be upper case too
     string ref_base = string(1, ::toupper(bp.ref_base()));
@@ -290,6 +291,7 @@ void Caller::call_base_pileup(const NodePileup& np, int64_t offset, bool inserti
     double& base_likelihood = insertion ? _insert_likelihoods[offset] : _node_likelihoods[offset];
     base_likelihood = mp_snp_genotype(bp, base_offsets, top_base, second_base, g);
     Genotype& base_call = insertion ? _insert_calls[offset] : _node_calls[offset];
+    //cerr << " g= " << g.first << ", " << g.second <<  " l=" << base_likelihood << " min=" <<_min_log_likelihood << endl;
 
     if (base_likelihood >= _min_log_likelihood) {
         // update the node calls
@@ -311,6 +313,8 @@ void Caller::call_base_pileup(const NodePileup& np, int64_t offset, bool inserti
     if (base_call.first == "-" && base_call.second != "-") {
         swap(base_call.first, base_call.second);
     }
+
+    //cerr << " bp " << pb2json(bp) << " --> " << base_call.first << ", " << base_call.second << endl;
 }
 
 void Caller::compute_top_frequencies(const BasePileup& bp,
@@ -447,21 +451,26 @@ double Caller::genotype_log_likelihood(const BasePileup& bp,
     const string& quals = bp.qualities();
     double perr;
     string ref_base = string(1, ::toupper(bp.ref_base()));
+    // inserts are treated completely seprately.  toggle here:
+    bool insert = first[0] == '+';
+    assert(!insert || second.empty() || second[0] == '+');
 
     for (int i = 0; i < base_offsets.size(); ++i) {
         string base = Pileups::extract(bp, base_offsets[i].first);
-        char qual = base_offsets[i].second >= 0 ? quals[base_offsets[i].second] : _default_quality;
-        perr = phred2prob(qual);
-        if (base == ref_base) {
-            // ref
-            log_likelihood += safe_log((m - g) * perr + g * (1. - perr));
-        } else if (base == first || base == second) {
-            // alt
-            log_likelihood += safe_log((m - g) * (1. - perr) + g * perr);
-        }        
-        else {
-            // just call anything else an error
-            log_likelihood += safe_log(2. * perr);
+        bool base_insert = base[0] == '+';
+        if (base_insert == insert) {
+            char qual = base_offsets[i].second >= 0 ? quals[base_offsets[i].second] : _default_quality;
+            perr = phred2prob(qual);
+            if (base == ref_base) {
+                // ref
+                log_likelihood += safe_log((m - g) * perr + g * (1. - perr));
+            } else if (base == first || base == second) {
+                // alt
+                log_likelihood += safe_log((m - g) * (1. - perr) + g * perr);
+            } else {
+                // just call anything else an error
+                log_likelihood += safe_log(2. * perr);
+            }
         }
     }
 
@@ -495,9 +504,10 @@ void Caller::create_node_calls(const NodePileup& np) {
         int next_cat = next == n ? -1 : call_cat(_node_calls[next]);
 
         cerr << _node->id() << "." << cur << " " << _node_calls[cur].first << "," <<_node_calls[cur].second  << endl;
-        
+
         // for anything but case where we merge consec. ref/refs
-        if (cat == 2 || cat != next_cat) {
+        if (cat == 2 || cat != next_cat ||
+            _insert_calls[next-1].first[0] == '+' || _insert_calls[next-1].second[0] == '+') {
 
             if (cat == 0) {
                 cerr << "Missing" << endl;
@@ -518,13 +528,14 @@ void Caller::create_node_calls(const NodePileup& np) {
                 nodes2.push_back(NULL);
                 offsets2.push_back(cur);
             }
+            
             else {
                 // some mix of reference and alts
                 assert(next == cur + 1);
                 
-                function<void(list<Node*>&, list<Node*>&, list<int>&, list<int>&, string&, string&, string&, string&)>  lambda =
-                    [&](list<Node*>& nodes1, list<Node*> nodes2, list<int>& offsets1, list<int>& offsets2,
-                        string& call1, string& call2, string& ins_call1, string& ins_call2) {
+                function<void(list<Node*>&, list<Node*>&, list<int>&, list<int>&, string&, string&)>  call_het =
+                    [&](list<Node*>& nodes1, list<Node*>& nodes2, list<int>& offsets1, list<int>& offsets2,
+                        string& call1, string& call2) {
                 
                     if (call1 == ".") {
                         // reference base
@@ -582,31 +593,11 @@ void Caller::create_node_calls(const NodePileup& np) {
                             _augmented_edges.insert(make_pair(no2, no1));
                         }
                     }
-                    if (ins_call1[0] == '+') {
-                        // insert
-                        int i = 1;
-                        for (; call1[i] <= '9' && call1[i] >= '0'; ++i);
-                        string new_seq = call1.substr(i, call1.length() - i);
-                        Node* node = _call_graph.create_node(new_seq, ++_max_id);
-                        cerr << "INS NODE " << pb2json(*node) << endl;
-                        nodes1.push_back(node);
-                        // offset -1 since insert has no reference coordinate
-                        offsets1.push_back(-1);
-                        if (ins_call2[0] != '+') {
-                            // use null token to make sure we insert relative to 2nd track if
-                            // something there
-                            nodes2.push_back(NULL);
-                            offsets2.push_back(-1);
-                        }
-                    }
-
                 };
 
                 // apply same logic to both calls, updating opposite arrays
-                lambda(nodes1, nodes2, offsets1, offsets2, _node_calls[cur].first, _node_calls[cur].second,
-                       _insert_calls[cur].first, _insert_calls[cur].second);
-                lambda(nodes2, nodes1, offsets2, offsets1, _node_calls[cur].second, _node_calls[cur].first,
-                       _insert_calls[cur].first, _insert_calls[cur].second);
+                call_het(nodes1, nodes2, offsets1, offsets2, _node_calls[cur].first, _node_calls[cur].second);
+                call_het(nodes2, nodes1, offsets2, offsets1, _node_calls[cur].second, _node_calls[cur].first);
                 
                 if (nodes1.size() == nodes2.size() - 1) {
                     nodes1.push_back(NULL);
@@ -617,6 +608,34 @@ void Caller::create_node_calls(const NodePileup& np) {
                     offsets2.push_back(-1);
                 }
             }
+
+            // inserts done separate at end since they take start between cur and next
+            function<void(list<Node*>&, list<Node*>&, list<int>&, list<int>&, string&, string&)>  call_inserts =
+                [&](list<Node*>& nodes1, list<Node*>& nodes2, list<int>& offsets1, list<int>& offsets2,
+                    string& ins_call1, string& ins_call2) {
+                if (ins_call1[0] == '+') {
+                    int ins_len;
+                    string ins_seq;
+                    bool ins_rev;
+                    Pileups::parse_insert(ins_call1, ins_len, ins_seq, ins_rev);
+                    // todo: check reverse?
+                    Node* node = _call_graph.create_node(ins_seq, ++_max_id);
+
+                    // bridge to insert
+                    NodeOffSide no1(NodeSide(_node->id(), true), next-1);
+                    NodeOffSide no2(NodeSide(node->id(), false), 0);
+                    _augmented_edges.insert(make_pair(no2, no1));
+                    // bridge from insert
+                    no1 = NodeOffSide(NodeSide(node->id(), true), node->sequence().length() - 1);
+                    no2 = NodeOffSide(NodeSide(_node->id(), false), next);
+                    _augmented_edges.insert(make_pair(no2, no1));
+                }
+            };
+            
+            cerr << "ins " << cur << " " << _insert_calls[cur].first << ", " << _insert_calls[cur].second << endl;
+            call_inserts(nodes1, nodes2, offsets1, offsets2, _insert_calls[next-1].first, _insert_calls[next-1].second);
+            call_inserts(nodes2, nodes1, offsets2, offsets1, _insert_calls[next-1].second, _insert_calls[next-1].first);
+                
             // shift right
             cur = next;
             cat = next_cat;
@@ -700,29 +719,29 @@ void Caller::create_snp_path(int64_t snp_node, bool secondary_snp) {
 
 void Caller::write_text_calls(const NodePileup& pileup) {
   
-  int n = _node->sequence().length();
-  assert (_node_calls.size() >= n);
-  assert (pileup.node_id() == _node->id());
-  assert (pileup.base_pileup_size() >= n);
-  const string& seq = _node->sequence();
+    int n = _node->sequence().length();
+    assert (_node_calls.size() >= n);
+    assert (pileup.node_id() == _node->id());
+    assert (pileup.base_pileup_size() >= n);
+    const string& seq = _node->sequence();
 
-  const string cat[3] = {"MISSING", "REF", "SNP"};
+    const string cat[3] = {"MISSING", "REF", "SNP"};
 
-  for (int i = 0; i < n; ++i) {
+    for (int i = 0; i < n; ++i) {
       
-    // use 1-based coordinates like vcf
-    *_text_calls << _node->id() << "\t" << (i + 1) << "\t"
-        // reference base
-                 << seq[i] << "\t"
-        // two comma-separated alternate bases
-                 << _node_calls[i].first << "," << _node_calls[i].second << "\t"
-        // category
-                 << cat[call_cat(_node_calls[i])] << "\t"
-        // likelihood
-                 << _node_likelihoods[i] << "\t"
-        // pileup for debugging
-                 << pileup.base_pileup(i).bases() << "\n";
-  }  
+        // use 1-based coordinates like vcf
+        *_text_calls << _node->id() << "\t" << (i + 1) << "\t"
+            // reference base
+                     << seq[i] << "\t"
+            // two comma-separated alternate bases
+                     << _node_calls[i].first << "," << _node_calls[i].second << "\t"
+            // category
+                     << cat[call_cat(_node_calls[i])] << "\t"
+            // likelihood
+                     << _node_likelihoods[i] << "\t"
+            // pileup for debugging
+                     << pileup.base_pileup(i).bases() << "\n";
+    }  
 }
 
 void NodeDivider::add_fragment(const Node* orig_node, int offset, Node* fragment) {
