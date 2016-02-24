@@ -28,6 +28,7 @@ struct NodeDivider {
     // Node id in original graph to map above
     typedef hash_map<int, NodeMap> NodeHash;
     NodeHash index;
+    int64_t* _max_id;
     // map given node to offset i of node with id in original graph
     // this function can never handle overlaps (and should only be called before break_end)
     void add_fragment(const Node* orig_node, int offset, Node* subnode);
@@ -37,6 +38,7 @@ struct NodeDivider {
     // erase everything (but don't free any Node pointers, they belong to the graph)
     void clear();
 };
+ostream& operator<<(ostream& os, const NodeDivider::NodeMap& nm);
 
 // Super simple variant caller, for now written to get bakeoff evaluation bootstrapped.
 // Idea: Idependently process Pileup records, using simple model to make calls that
@@ -91,6 +93,11 @@ public:
     typedef pair<string, string> Genotype;
     vector<Genotype> _node_calls;
     vector<double> _node_likelihoods;
+    // separate structure for isnertion calls since they
+    // don't really have reference coordinates (instead happen just to
+    // right of offset).  
+    vector<Genotype> _insert_calls;
+    vector<double> _insert_likelihoods;
     // buffer for current node;
     const Node* _node;
     // max id in call_graph
@@ -142,13 +149,17 @@ public:
     void update_call_graph();
     
     // call position at given base
-    void call_base_pileup(const NodePileup& np, int64_t offset);
+    // if insertion flag set to true, call insertion between base and next base
+    void call_base_pileup(const NodePileup& np, int64_t offset, bool insertions);
     
     // Find the top-two bases in a pileup, along with their counts
+    // Last param toggles whether we consider only inserts or everything else
+    // (do not compare all at once since inserts do not have reference coordinates)
     void compute_top_frequencies(const BasePileup& bp,
                                  const vector<pair<int, int> >& base_offsets,
                                  string& top_base, int& top_count, int& top_rev_count,
-                                 string& second_base, int& second_count, int& second_rev_count);
+                                 string& second_base, int& second_count, int& second_rev_count,
+                                 bool inserts);
     
     // compute genotype for a position with maximum prob
     double mp_snp_genotype(const BasePileup& bp,
@@ -164,8 +175,8 @@ public:
     // node.  
     void create_node_calls(const NodePileup& np);
 
-    void create_augmented_edge(Node* node1, int from_offset, bool left_side1,
-                               Node* node2, int to_offset, bool left_side2);
+    void create_augmented_edge(Node* node1, int from_offset, bool left_side1, bool aug1,
+                               Node* node2, int to_offset, bool left_side2, bool aug2);
 
 
     // add snp and insert edgers to list connecting the new nodes created by create_node_calls
@@ -234,6 +245,7 @@ public:
     }
 };
 
+ostream& operator<<(ostream& os, const Caller::NodeOffSide& no);
 
 
 }

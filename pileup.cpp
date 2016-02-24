@@ -543,7 +543,6 @@ void Pileups::parse_base_offsets(const BasePileup& bp,
     for (int i = 0; i < bp.num_bases(); ++i) {
         // insert
         if (bases[base_offset] == '+') {
-            cerr << "parse ins" << endl;
             offsets.push_back(make_pair(base_offset, i < quals.length() ? i : -1));
             int lf = base_offset + 1;
             int rf = lf;
@@ -557,7 +556,6 @@ void Pileups::parse_base_offsets(const BasePileup& bp,
             base_offset += 1 + rf - lf + indel_len;
         // delete
         } else if (bases[base_offset] == '-') {
-            cerr << "parse del" << endl;
             offsets.push_back(make_pair(base_offset, i < quals.length() ? i : -1));
             int lf = base_offset + 1;
             // eat up four semicolons
@@ -572,7 +570,6 @@ void Pileups::parse_base_offsets(const BasePileup& bp,
         }
         // match / snp
         else {
-            cerr << "parse snp " << endl;
             offsets.push_back(make_pair(base_offset, i < quals.length() ? i : -1));
             ++base_offset;
         }
@@ -656,7 +653,6 @@ void Pileups::parse_insert(const string& tok, int& len, string& seq, bool& is_re
 void Pileups::parse_delete(const string& tok, int& len, bool& from_start, int& to_id, int& to_offset,
                            bool& to_end)
 {
-    cerr << " tok " << tok << endl;
     assert(tok[0] == '-');
     vector<string> toks;
     split_delims(tok, ";", toks);
@@ -691,7 +687,7 @@ string Pileups::extract(const BasePileup& bp, int offset) {
     if (bases[offset] != '+' && bases[offset] != '-') {
         return string(1, extract_match(bp, offset));
     }
-    else {
+    else if (bases[offset] == '+') {
         string len_str;
         for (int i = offset + 1; bases[i] >= '0' && bases[i] <= '9'; ++i) {
             len_str += bases[i];
@@ -707,6 +703,18 @@ string Pileups::extract(const BasePileup& bp, int offset) {
             casify(dna, false);
             return string(1, bases[offset]) + len_str + reverse_complement(dna);
         }
+    }
+    else {
+        assert(bases[offset] == '-');
+        // todo : consolidate deletion parsing code better than this
+        int sc = 0;
+        int i = offset;
+        for (; sc < 4; ++i) {
+            if (bases[i] == ';') {
+                ++sc;
+            }
+        }
+        return bases.substr(offset, i - offset + 1);
     }
 }
 
