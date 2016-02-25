@@ -211,6 +211,43 @@ void Caller::update_call_graph() {
     //_call_graph.compact_ids();
 }
 
+void Caller::map_paths() {
+    // if we don't leave uncalled nodes (ie make augmented graph),
+    // then the paths may get disconnected, which we don't support for now
+    assert(_leave_uncalled == true);
+    function<void(Path&)> lambda = [&](Path& path) {
+        list<Mapping>& call_path = _call_graph.paths.create_path(path.name());
+        int last_rank = -1;
+        int last_call_rank = 0;
+        for (int i = 0; i < path.mapping_size(); ++i) {
+            const Mapping& mapping = path.mapping(i);
+            int rank = mapping.rank() == 0 ? i+1 : mapping.rank();
+            if (mapping.edit_size() != 1 ||
+                mapping.edit(0).from_length() !=
+                mapping.edit(0).to_length() ||
+                rank <= last_rank) {
+                cerr << "Skipping input path " << path.name()
+                     << " because ranks out of order or non-trivial edits." << endl;
+                set<string> s;
+                s.insert(path.name());
+                _call_graph.paths.remove_paths(s);
+                return;
+            }
+            int node_id = mapping.position().node_id();
+            int len = mapping.edit(0).from_length();
+            int start = mapping.position().offset();
+            int end = mapping.is_reverse() ? start - len + 1 : start + len - 1;
+            list<Mapping> call_mappings = _node_divider.map_node(node_id, start, len, mapping.is_reverse());
+            for (auto& cm : call_mappings) {
+                cm.set_rank(++last_call_rank);
+                call_path.push_back(cm);
+            }
+        }
+    };
+    _graph->paths.for_each(lambda);
+    
+}
+
 void Caller::create_augmented_edge(Node* node1, int from_offset, bool left_side1, bool aug1,
                                    Node* node2, int to_offset, bool left_side2, bool aug2) {
     pair<Node*, Node*> call_sides1;
@@ -261,7 +298,7 @@ void Caller::call_base_pileup(const NodePileup& np, int64_t offset, bool inserti
     const BasePileup& bp = np.base_pileup(offset);
 
     // parse the pilueup structure
-    vector<pair<int, int> > base_offsets;
+    vector<pair<int64_t, int64_t> > base_offsets;
     Pileups::parse_base_offsets(bp, base_offsets);
 
     // compute top two most frequent bases and their counts
@@ -318,7 +355,7 @@ void Caller::call_base_pileup(const NodePileup& np, int64_t offset, bool inserti
 }
 
 void Caller::compute_top_frequencies(const BasePileup& bp,
-                                     const vector<pair<int, int> >& base_offsets,
+                                     const vector<pair<int64_t, int64_t> >& base_offsets,
                                      string& top_base, int& top_count, int& top_rev_count,
                                      string& second_base, int& second_count, int& second_rev_count,
                                      bool inserts) {
@@ -345,7 +382,7 @@ void Caller::compute_top_frequencies(const BasePileup& bp,
 
         // val will always be uppcase / forward strand.  we check
         // the original pileup to see if reversed
-        if (bases[i.first] == ',' || ::islower(bases[i.first + val.length() - 1])) {
+        if (bases[i.firs] == ',' || ::islower(bases[i.first + val.length() - 1])) {
             ++rev_hist[val];
         }
     }
@@ -386,7 +423,7 @@ void Caller::compute_top_frequencies(const BasePileup& bp,
 
 // Estimate the most probable snp genotype
 double Caller::mp_snp_genotype(const BasePileup& bp,
-                               const vector<pair<int, int> >& base_offsets,
+                               const vector<pair<int64_t, int64_t> >& base_offsets,
                                const string& top_base, const string& second_base,
                                Genotype& mp_genotype) {
 
@@ -438,7 +475,7 @@ double Caller::mp_snp_genotype(const BasePileup& bp,
 // A statistical framework for SNP calling ... , Heng Li, Bioinformatics, 2011
 // http://bioinformatics.oxfordjournals.org/content/27/21/2987.full
 double Caller::genotype_log_likelihood(const BasePileup& bp,
-                                       const vector<pair<int, int> >& base_offsets,
+                                       const vector<pair<int64_t, int64_t> >& base_offsets,
                                        double g, const string& first, const string& second) {
     // g = number of ref alleles
     // first, second = alt alleles (can be the same if only considering one)
@@ -509,7 +546,7 @@ void Caller::create_node_calls(const NodePileup& np) {
         if (cat == 2 || cat != next_cat ||
             _insert_calls[next-1].first[0] == '+' || _insert_calls[next-1].second[0] == '+') {
 
-            if (cat == 0) {
+            if (cat == 0 && !_leave_uncalled) {
                 cerr << "Missing" << endl;
                 // missing? add NULL to both tracks
                 nodes1.push_back(NULL);
@@ -517,12 +554,13 @@ void Caller::create_node_calls(const NodePileup& np) {
                 nodes2.push_back(NULL);
                 offsets2.push_back(cur);
             }        
-            else if (cat == 1) {
+            else if (cat == 1 || (cat == 0 && _leave_uncalled)) {
                 // add reference
                 cerr << "Ref/Ref" << endl;
                 string new_seq = seq.substr(cur, next - cur);
                 Node* node = _call_graph.create_node(new_seq, ++_max_id);
                 _node_divider.add_fragment(_node, cur, node);
+                // todo : add metadata
                 nodes1.push_back(node);
                 offsets1.push_back(cur);
                 nodes2.push_back(NULL);
@@ -537,12 +575,13 @@ void Caller::create_node_calls(const NodePileup& np) {
                     [&](list<Node*>& nodes1, list<Node*>& nodes2, list<int>& offsets1, list<int>& offsets2,
                         string& call1, string& call2) {
                 
-                    if (call1 == ".") {
+                    if (call1 == "." || (_leave_uncalled && call1 == "-")) {
                         // reference base
                         string new_seq = seq.substr(cur, 1);
                         Node* node = _call_graph.create_node(new_seq, ++_max_id);
                         _node_divider.add_fragment(_node, cur, node);
                         cerr << "REF NODE " << pb2json(*node) << endl;
+                        // todo leave uncalled metadata
                         nodes1.push_back(node);
                         offsets1.push_back(cur);
                     }
@@ -557,12 +596,12 @@ void Caller::create_node_calls(const NodePileup& np) {
                     }
                     else if (call1[0] == '-' && call1.length() > 1) {
                         // delete
-                        int del_len;
+                        int64_t del_len;
                         bool from_start;
-                        int from_id = _node->id();
+                        int64_t from_id = _node->id();
                         int from_offset = cur;
-                        int to_id;
-                        int to_offset;
+                        int64_t to_id;
+                        int64_t to_offset;
                         bool to_end;
                         Pileups::parse_delete(call1, del_len, from_start, to_id, to_offset, to_end);
                         NodeOffSide s1(NodeSide(from_id, !from_start), from_offset);
@@ -612,7 +651,7 @@ void Caller::create_node_calls(const NodePileup& np) {
             // inserts done separate at end since they take start between cur and next
             function<void(string&, string&)>  call_inserts = [&](string& ins_call1, string& ins_call2) {
                 if (ins_call1[0] == '+') {
-                    int ins_len;
+                    int64_t ins_len;
                     string ins_seq;
                     bool ins_rev;
                     Pileups::parse_insert(ins_call1, ins_len, ins_seq, ins_rev);
@@ -844,6 +883,65 @@ pair<Node*, Node*> NodeDivider::break_end(const Node* orig_node, VG* graph, int 
         if (fragment2) cerr << " , " << pb2json(*fragment2);
     } cerr << endl;
     return left_side ? make_pair(new_node1, new_node2) : make_pair(fragment1, fragment2);
+}
+
+// this function only works if node is completely covered in divider structure,
+list<Mapping> NodeDivider::map_node(int64_t node_id, int64_t start_offset, int64_t length, bool reverse){
+    NodeHash::iterator i = index.find(node_id);
+    assert(i != index.end());
+    NodeMap& node_map = i->second;
+    list<Mapping> out_mappings;
+    int cur_len = 0;
+    if (!reverse) {
+        for (auto i : node_map) {
+            if (i.first >= start_offset && cur_len < length) {
+                Node* call_node = i.second.first;
+                Mapping mapping;
+                mapping.mutable_position()->set_node_id(call_node->id());
+                if (start_offset > i.first && out_mappings.empty()) {
+                    mapping.mutable_position()->set_offset(start_offset - i.first);
+                } else {
+                    mapping.mutable_position()->set_offset(0);
+                }
+                int map_len = call_node->sequence().length() - mapping.position().offset();
+                if (map_len + cur_len > length) {
+                    map_len = length - cur_len;
+                }
+                Edit* edit = mapping.add_edit();
+                edit->set_from_length(map_len);
+                edit->set_to_length(map_len);
+                cur_len += map_len;
+            }
+        }
+    } else {
+        // should fold into above when on less cold meds. 
+        for (NodeMap::reverse_iterator i = node_map.rbegin(); i != node_map.rend(); ++i)
+        {
+            if (i->first <= start_offset && cur_len < length) {
+                // todo: is this reference??
+                Node* call_node = i->second.first;
+                Mapping mapping;
+                mapping.set_is_reverse(true);
+                mapping.mutable_position()->set_node_id(call_node->id());
+                if (start_offset > i->first && out_mappings.empty()) {
+                    mapping.mutable_position()->set_offset(start_offset - i->first);
+                } else {
+                    mapping.mutable_position()->set_offset(0);
+                }
+                int map_len = call_node->sequence().length() - mapping.position().offset();
+                if (map_len + cur_len > length) {
+                    map_len = length - cur_len;
+                }
+                Edit* edit = mapping.add_edit();
+                edit->set_from_length(map_len);
+                edit->set_to_length(map_len);
+                cur_len += map_len;
+            }
+        }
+    }
+                
+    assert(cur_len == length);
+    return out_mappings;
 }
 
 void NodeDivider::clear() {

@@ -163,7 +163,7 @@ public:
                                  bool skipIndels = false);
 
     // check base quality as well as miss match filter
-    bool pass_filter(const Alignment& alignment, int read_offset,
+    bool pass_filter(const Alignment& alignment, int64_t read_offset,
                      const vector<int>& mismatches) const;
 
     // look at the base pileup for the last base of a read.  if there are too many
@@ -215,7 +215,7 @@ public:
     // will parse out all the offsets of snps, insertions, and deletions
     // into one array, each offset is a pair of indexes in the bases and qualities arrays
     static void parse_base_offsets(const BasePileup& bp,
-                                   vector<pair<int, int> >& offsets);
+                                   vector<pair<int64_t, int64_t> >& offsets);
 
     // transform case of every character in string
     static void casify(string& seq, bool is_reverse);
@@ -223,22 +223,22 @@ public:
     // make the sam pileup style token
     static void make_match(string& seq, int64_t from_length, bool is_reverse);
     static void make_insert(string& seq, bool is_reverse);
-    static void make_delete(string& seq, int node_id, int node_offset, bool is_reverse);
-    static void make_delete(string& seq, int len, int from_start, int to_id, int to_end, int to_offset);
+    static void make_delete(string& seq, int64_t node_id, int64_t node_offset, bool is_reverse);
+    static void make_delete(string& seq, int64_t len, bool from_start, int64_t to_id, int64_t to_offset, bool to_end);
 
     static void append_delete(string& bases, const string& seq);
         
-    static void parse_insert(const string& tok, int& len, string& seq, bool& is_reverse);
-    static void parse_delete(const string& tok, int& len, bool& from_start, int& to_id, int& to_offset,
+    static void parse_insert(const string& tok, int64_t& len, string& seq, bool& is_reverse);
+    static void parse_delete(const string& tok, int64_t& len, bool& from_start, int64_t& to_id, int64_t& to_offset,
                              bool& to_end);
 
     static bool base_equal(char c1, char c2, bool is_reverse);
     
     // get a pileup value on forward strand
-    static char extract_match(const BasePileup& bp, int offset);
+    static char extract_match(const BasePileup& bp, int64_t offset);
 
     // get arbitrary value from offset on forward strand
-    static string extract(const BasePileup& bp, int offset);
+    static string extract(const BasePileup& bp, int64_t offset);
 };
 
 

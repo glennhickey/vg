@@ -688,6 +688,14 @@ int main_call(int argc, char** argv) {
     }
     caller.update_call_graph();
 
+    // map the paths from the original graph
+    if (leave_uncalled) {
+        if (show_progress) {
+            cerr << "Mapping paths into call graph" << endl;
+        }
+        caller.map_paths();
+    }
+
     // write the call graph
     if (show_progress) {
         cerr << "Writing call graph" << endl;

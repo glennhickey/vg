@@ -35,6 +35,9 @@ struct NodeDivider {
     // break node if necessary so that we can attach edge at specified side
     // this function wil return NULL if there's no node covering the given location
     pair<Node*, Node*> break_end(const Node* orig_node, VG* graph, int offset, bool left_side);
+    // assuming input node is fully covered, list of nodes that correspond to it in call graph
+    // if node not in structure at all, just return input (assumption uncalled nodes kept as is)
+    list<Mapping> map_node(int64_t node_id, int64_t start_offset, int64_t length, bool reverse);
     // erase everything (but don't free any Node pointers, they belong to the graph)
     void clear();
 };
@@ -147,6 +150,9 @@ public:
     // fill in edges in the call graph (those that are incident to 2 call nodes)
     // and add uncalled nodes (optionally)
     void update_call_graph();
+
+    // map paths from input graph into called graph
+    void map_paths();
     
     // call position at given base
     // if insertion flag set to true, call insertion between base and next base
@@ -156,19 +162,19 @@ public:
     // Last param toggles whether we consider only inserts or everything else
     // (do not compare all at once since inserts do not have reference coordinates)
     void compute_top_frequencies(const BasePileup& bp,
-                                 const vector<pair<int, int> >& base_offsets,
+                                 const vector<pair<int64_t, int64_t> >& base_offsets,
                                  string& top_base, int& top_count, int& top_rev_count,
                                  string& second_base, int& second_count, int& second_rev_count,
                                  bool inserts);
     
     // compute genotype for a position with maximum prob
     double mp_snp_genotype(const BasePileup& bp,
-                           const vector<pair<int, int> >& base_offsets,
+                           const vector<pair<int64_t, int64_t> >& base_offsets,
                            const string& top_base, const string& second_base,
                            Genotype& mp_genotype);
     // compute likelihood of a genotype samtools-style
     double genotype_log_likelihood(const BasePileup& pb,
-                                   const vector<pair<int, int> >& base_offsets,
+                                   const vector<pair<int64_t, int64_t> >& base_offsets,
                                    double g, const string& first, const string& second);
 
     // write graph structure corresponding to all the calls for the current
