@@ -7,6 +7,7 @@
 #include <cmath>
 #include <limits>
 #include <unordered_set>
+#include <tuple>
 #include "vg.pb.h"
 #include "vg.hpp"
 #include "hash_map.hpp"
@@ -23,18 +24,27 @@ using namespace std;
 // pair element is mandatory and second optional, and they both need to be
 // same length if they both exist. 
 struct NodeDivider {
+    // up to three fragments per position in augmented graph
+    enum EntryCat {Ref = 0, Alt1, Alt2, Last};
+    struct Entry { Entry(Node* r = 0, Node* a1 = 0, Node* a2 = 0) : ref(r), alt1(a1), alt2(a2) {}
+        Node* ref; Node* alt1; Node* alt2;
+        Node*& operator[](int i) {
+            assert(i >= 0 && i <= 2);
+            return i == EntryCat::Ref ? ref : (i == EntryCat::Alt1 ? alt1 : alt2);
+        }
+    };
     // offset in original graph node -> up to 2 nodes in call graph
-    typedef map<int, pair<Node*, Node*> > NodeMap;
+    typedef map<int, Entry> NodeMap;
     // Node id in original graph to map above
     typedef hash_map<int, NodeMap> NodeHash;
     NodeHash index;
     int64_t* _max_id;
     // map given node to offset i of node with id in original graph
     // this function can never handle overlaps (and should only be called before break_end)
-    void add_fragment(const Node* orig_node, int offset, Node* subnode);
+    void add_fragment(const Node* orig_node, int offset, Node* subnode, EntryCat cat);
     // break node if necessary so that we can attach edge at specified side
     // this function wil return NULL if there's no node covering the given location
-    pair<Node*, Node*> break_end(const Node* orig_node, VG* graph, int offset, bool left_side);
+    Entry break_end(const Node* orig_node, VG* graph, int offset, bool left_side);
     // assuming input node is fully covered, list of nodes that correspond to it in call graph
     // if node not in structure at all, just return input (assumption uncalled nodes kept as is)
     list<Mapping> map_node(int64_t node_id, int64_t start_offset, int64_t length, bool reverse);
@@ -42,6 +52,7 @@ struct NodeDivider {
     void clear();
 };
 ostream& operator<<(ostream& os, const NodeDivider::NodeMap& nm);
+ostream& operator<<(ostream& os, NodeDivider::Entry entry);
 
 // Super simple variant caller, for now written to get bakeoff evaluation bootstrapped.
 // Idea: Idependently process Pileup records, using simple model to make calls that
@@ -183,11 +194,6 @@ public:
 
     void create_augmented_edge(Node* node1, int from_offset, bool left_side1, bool aug1,
                                Node* node2, int to_offset, bool left_side2, bool aug2);
-
-
-    // add snp and insert edgers to list connecting the new nodes created by create_node_calls
-    void create_snp_insert_edges(list<Node*> nodes1, list<Node*> nodes2, list<int> offsets1,
-                      list<int> offsets2);
 
     // make a path corresponding to a snp in the call grpah
     void create_snp_path(int64_t snp_node, bool secondary_snp);

@@ -223,13 +223,14 @@ public:
     // make the sam pileup style token
     static void make_match(string& seq, int64_t from_length, bool is_reverse);
     static void make_insert(string& seq, bool is_reverse);
-    static void make_delete(string& seq, int64_t node_id, int64_t node_offset, bool is_reverse);
-    static void make_delete(string& seq, int64_t len, bool from_start, int64_t to_id, int64_t to_offset, bool to_end);
+    static void make_delete(string& seq, bool is_reverse, int64_t node_id, int64_t node_offset, bool map_reverse);
+    static void make_delete(string& seq, bool is_reverse, int64_t len, bool from_start, int64_t to_id, int64_t to_offset,
+                            bool to_end);
 
     static void append_delete(string& bases, const string& seq);
         
     static void parse_insert(const string& tok, int64_t& len, string& seq, bool& is_reverse);
-    static void parse_delete(const string& tok, int64_t& len, bool& from_start, int64_t& to_id, int64_t& to_offset,
+    static void parse_delete(const string& tok, bool& is_reverse, int64_t& len, bool& from_start, int64_t& to_id, int64_t& to_offset,
                              bool& to_end);
 
     static bool base_equal(char c1, char c2, bool is_reverse);

@@ -66,8 +66,16 @@ void Caller::clear() {
 
 void Caller::write_call_graph(ostream& out, bool json) {
     if (json) {
+        _call_graph.paths.to_graph(_call_graph.graph);
         out << pb2json(_call_graph.graph);
     } else {
+        cerr << "writing graph with " << _call_graph.paths._paths.size() << endl;
+        for (auto i :  _call_graph.paths._paths) {
+            cerr << " path " << i.first << endl;
+            for (auto j : i.second) {
+                cerr << " " << pb2json(j);
+            }
+        }
         _call_graph.serialize_to_ostream(out);
     }
 }
@@ -127,7 +135,7 @@ void Caller::update_call_graph() {
         function<void(Node*)> add_node = [&](Node* node) {
             if (_visited_nodes.find(node->id()) == _visited_nodes.end()) {
                 Node* call_node = _call_graph.create_node(node->sequence(), node->id());
-                _node_divider.add_fragment(node, 0, call_node);
+                _node_divider.add_fragment(node, 0, call_node, NodeDivider::EntryCat::Ref);
             }
         };
         _graph->for_each_node(add_node);
@@ -222,10 +230,14 @@ void Caller::map_paths() {
         for (int i = 0; i < path.mapping_size(); ++i) {
             const Mapping& mapping = path.mapping(i);
             int rank = mapping.rank() == 0 ? i+1 : mapping.rank();
-            if (mapping.edit_size() != 1 ||
-                mapping.edit(0).from_length() !=
-                mapping.edit(0).to_length() ||
-                rank <= last_rank) {
+            int len = mapping.edit_size() == 0 ? _graph->get_node(mapping.position().node_id())->sequence().length() :
+                mapping.edit(0).from_length();
+            int to_len = mapping.edit_size() == 0 ? len : mapping.edit(0).to_length();
+            if (mapping.edit_size() > 1 || len != to_len || rank <= last_rank) {
+                cerr << "rank " << rank;
+                cerr << "mapping " << pb2json(mapping) << endl;
+                cerr << "last_rank " << last_rank << endl;
+                cerr << "i " << i << endl;
                 cerr << "Skipping input path " << path.name()
                      << " because ranks out of order or non-trivial edits." << endl;
                 set<string> s;
@@ -234,7 +246,7 @@ void Caller::map_paths() {
                 return;
             }
             int node_id = mapping.position().node_id();
-            int len = mapping.edit(0).from_length();
+            
             int start = mapping.position().offset();
             int end = mapping.is_reverse() ? start - len + 1 : start + len - 1;
             list<Mapping> call_mappings = _node_divider.map_node(node_id, start, len, mapping.is_reverse());
@@ -242,6 +254,7 @@ void Caller::map_paths() {
                 cm.set_rank(++last_call_rank);
                 call_path.push_back(cm);
             }
+            last_rank = rank; 
         }
     };
     _graph->paths.for_each(lambda);
@@ -250,47 +263,41 @@ void Caller::map_paths() {
 
 void Caller::create_augmented_edge(Node* node1, int from_offset, bool left_side1, bool aug1,
                                    Node* node2, int to_offset, bool left_side2, bool aug2) {
-    pair<Node*, Node*> call_sides1;
-    pair<Node*, Node*> call_sides2;
+    NodeDivider::Entry call_sides1;
+    NodeDivider::Entry call_sides2;
 
     if (aug1) {
         call_sides1 = _node_divider.break_end(node1, &_call_graph, from_offset,
                                               left_side1);
     } else {
-        call_sides1 = make_pair(node1, (Node*)NULL);
+        call_sides1 = NodeDivider::Entry(node1, NULL, NULL);
     }
     if (aug2) {
         call_sides2 = _node_divider.break_end(node2, &_call_graph, to_offset,
                                               left_side2);
     } else {
-        call_sides2 = make_pair(node2, (Node*)NULL);
+        call_sides2 = NodeDivider::Entry(node2, NULL, NULL);
     }
     
     cerr << "Input Edge " << node1->id() << ":" << from_offset << ",l=" << left_side1 << ",a=" << aug1
          << " - " << node2->id() << ":" <<to_offset << ",l=" << left_side2 <<" ,a=" << aug2 << endl;
     cerr << " -> ["
-         << (call_sides1.first ? call_sides1.first->id() : -1) << ", "
-         << (call_sides1.second ? call_sides1.second->id() : -1) << "] X ["
-         << (call_sides2.first ? call_sides2.first->id() : -1) << ", "
-         << (call_sides2.second ? call_sides2.second->id() : -1) << "]" << endl;
+         << (call_sides1.ref ? call_sides1.ref->id() : -1) << ", "
+         << (call_sides1.alt1 ? call_sides1.alt1->id() : -1) << ", "
+         << (call_sides1.alt2 ? call_sides1.alt2->id() : -1) << "] X ["
+         << (call_sides2.ref ? call_sides2.ref->id() : -1) << ", "
+         << (call_sides2.alt1 ? call_sides2.alt1->id() : -1) << ", "
+         << (call_sides2.alt2 ? call_sides2.alt2->id() : -1) << "]" << endl;
     cerr << "NM 1 " << _node_divider.index[1] << endl;
 
-    // make up to four edges connecting them in the call graph
-    if (call_sides1.first != NULL && call_sides2.first != NULL) {
-        _call_graph.create_edge(call_sides1.first, call_sides2.first,
-                                left_side1, !left_side2);
-    }
-    if (call_sides1.first != NULL && call_sides2.second != NULL) {
-        _call_graph.create_edge(call_sides1.first, call_sides2.second,
-                                left_side1, !left_side2);
-    }
-    if (call_sides1.second != NULL && call_sides2.first != NULL) {
-        _call_graph.create_edge(call_sides1.second, call_sides2.first,
-                                left_side1, !left_side2);
-    }
-    if (call_sides1.second != NULL && call_sides2.second != NULL) {
-        _call_graph.create_edge(call_sides1.second, call_sides2.second,
-                                left_side1, !left_side2);    
+    // make up to 9 edges connecting them in the call graph
+    for (int i = 0; i < (int)NodeDivider::EntryCat::Last; ++i) {
+        for (int j = 0; j < (int)NodeDivider::EntryCat::Last; ++j) {
+            if (call_sides1[i] != NULL && call_sides2[j] != NULL) {
+                _call_graph.create_edge(call_sides1[i], call_sides2[j],
+                                        left_side1, !left_side2);
+            }
+        }
     }
 }
 
@@ -382,7 +389,16 @@ void Caller::compute_top_frequencies(const BasePileup& bp,
 
         // val will always be uppcase / forward strand.  we check
         // the original pileup to see if reversed
-        if (bases[i.firs] == ',' || ::islower(bases[i.first + val.length() - 1])) {
+        bool reverse = bases[i.first] == ',' ||
+            (bases[i.first] == '+' && ::islower(bases[i.first + val.length() - 1]));
+        if (bases[i.first] == '-') {
+            string tok = Pileups::extract(bp, i.first);
+            bool is_reverse, from_start, to_end;
+            int64_t len, to_id, to_offset;
+            Pileups::parse_delete(tok, is_reverse, len, from_start, to_id, to_offset, to_end);
+            reverse = is_reverse;
+        }
+        if (reverse) {
             ++rev_hist[val];
         }
     }
@@ -522,17 +538,6 @@ void Caller::create_node_calls(const NodePileup& np) {
     int cur = 0;
     int cat = call_cat(_node_calls[cur]);
 
-    // we make two tracks of nodes since we'll have up to two
-    // parallel calls at any give position (given diploid assumption everywhere)
-    // a node at position i in nodes1 will connect to all nodes at i-1 and i+1
-    // in both arrays (if they exist)
-    list<Node*> nodes1;
-    list<Node*> nodes2;
-    // reference start position of original node of ith position in above arrays
-    // -1 for inserts and gaps
-    list<int> offsets1;
-    list<int> offsets2;
-
     // scan calls, merging contiguous reference calls.  only consider
     // ref / snp / inserts on first pass.  
     // scan contiguous chunks of a node with same call
@@ -548,51 +553,60 @@ void Caller::create_node_calls(const NodePileup& np) {
 
             if (cat == 0 && !_leave_uncalled) {
                 cerr << "Missing" << endl;
-                // missing? add NULL to both tracks
-                nodes1.push_back(NULL);
-                offsets1.push_back(cur);
-                nodes2.push_back(NULL);
-                offsets2.push_back(cur);
             }        
             else if (cat == 1 || (cat == 0 && _leave_uncalled)) {
                 // add reference
                 cerr << "Ref/Ref" << endl;
                 string new_seq = seq.substr(cur, next - cur);
                 Node* node = _call_graph.create_node(new_seq, ++_max_id);
-                _node_divider.add_fragment(_node, cur, node);
-                // todo : add metadata
-                nodes1.push_back(node);
-                offsets1.push_back(cur);
-                nodes2.push_back(NULL);
-                offsets2.push_back(cur);
+                _node_divider.add_fragment(_node, cur, node, NodeDivider::EntryCat::Ref);
+                // bridge to node
+                NodeOffSide no1(NodeSide(_node->id(), true), cur-1);
+                NodeOffSide no2(NodeSide(node->id(), false), cur);
+                _augmented_edges.insert(make_pair(no1, no2));
+                // bridge from node
+                no1 = NodeOffSide(NodeSide(node->id(), true), next-1);
+                no2 = NodeOffSide(NodeSide(_node->id(), false), next);
+                _augmented_edges.insert(make_pair(no1, no2));
             }
             
             else {
                 // some mix of reference and alts
                 assert(next == cur + 1);
                 
-                function<void(list<Node*>&, list<Node*>&, list<int>&, list<int>&, string&, string&)>  call_het =
-                    [&](list<Node*>& nodes1, list<Node*>& nodes2, list<int>& offsets1, list<int>& offsets2,
-                        string& call1, string& call2) {
+                function<void(string&, string&, NodeDivider::EntryCat)>  call_het =
+                    [&](string& call1, string& call2, NodeDivider::EntryCat altCat) {
                 
                     if (call1 == "." || (_leave_uncalled && call1 == "-")) {
                         // reference base
                         string new_seq = seq.substr(cur, 1);
                         Node* node = _call_graph.create_node(new_seq, ++_max_id);
-                        _node_divider.add_fragment(_node, cur, node);
+                        _node_divider.add_fragment(_node, cur, node, NodeDivider::EntryCat::Ref);
                         cerr << "REF NODE " << pb2json(*node) << endl;
-                        // todo leave uncalled metadata
-                        nodes1.push_back(node);
-                        offsets1.push_back(cur);
+                        // bridge to node
+                        NodeOffSide no1(NodeSide(_node->id(), true), cur-1);
+                        NodeOffSide no2(NodeSide(node->id(), false), cur);
+                        _augmented_edges.insert(make_pair(no1, no2));
+                        // bridge from node
+                        no1 = NodeOffSide(NodeSide(node->id(), true), next-1);
+                        no2 = NodeOffSide(NodeSide(_node->id(), false), next);
+                        _augmented_edges.insert(make_pair(no1, no2));
                     }
                     else if (call1[0] != '-' && call1[0] != '+' && call1[0] != '-') {
                         // snp base
                         string new_seq = call1;
                         Node* node = _call_graph.create_node(new_seq, ++_max_id);
-                        _node_divider.add_fragment(_node, cur, node);
+                        _node_divider.add_fragment(_node, cur, node, altCat);
                         cerr << "SNP NODE (" << call1 << ") " << pb2json(*node) << endl;
-                        nodes1.push_back(node);
-                        offsets1.push_back(cur);
+
+                        // bridge to node
+                        NodeOffSide no1(NodeSide(_node->id(), true), cur-1);
+                        NodeOffSide no2(NodeSide(node->id(), false), cur);
+                        _augmented_edges.insert(make_pair(no1, no2));
+                        // bridge from node
+                        no1 = NodeOffSide(NodeSide(node->id(), true), next-1);
+                        no2 = NodeOffSide(NodeSide(_node->id(), false), next);
+                        _augmented_edges.insert(make_pair(no1, no2));
                     }
                     else if (call1[0] == '-' && call1.length() > 1) {
                         // delete
@@ -603,7 +617,8 @@ void Caller::create_node_calls(const NodePileup& np) {
                         int64_t to_id;
                         int64_t to_offset;
                         bool to_end;
-                        Pileups::parse_delete(call1, del_len, from_start, to_id, to_offset, to_end);
+                        bool reverse;
+                        Pileups::parse_delete(call1, reverse, del_len, from_start, to_id, to_offset, to_end);
                         NodeOffSide s1(NodeSide(from_id, !from_start), from_offset);
                         NodeOffSide s2(NodeSide(to_id, to_end), to_offset);
                         Node* node2 = _graph->get_node(to_id);
@@ -635,17 +650,8 @@ void Caller::create_node_calls(const NodePileup& np) {
                 };
 
                 // apply same logic to both calls, updating opposite arrays
-                call_het(nodes1, nodes2, offsets1, offsets2, _node_calls[cur].first, _node_calls[cur].second);
-                call_het(nodes2, nodes1, offsets2, offsets1, _node_calls[cur].second, _node_calls[cur].first);
-                
-                if (nodes1.size() == nodes2.size() - 1) {
-                    nodes1.push_back(NULL);
-                    offsets1.push_back(-1);
-                }
-                if (nodes1.size() == nodes2.size() + 1) {
-                    nodes2.push_back(NULL);
-                    offsets2.push_back(-1);
-                }
+                call_het(_node_calls[cur].first, _node_calls[cur].second, NodeDivider::EntryCat::Alt1);
+                call_het(_node_calls[cur].second, _node_calls[cur].first, NodeDivider::EntryCat::Alt2);                
             }
 
             // inserts done separate at end since they take start between cur and next
@@ -678,55 +684,8 @@ void Caller::create_node_calls(const NodePileup& np) {
             cat = next_cat;
         }
     }
-
-    create_snp_insert_edges(nodes1, nodes2, offsets1, offsets2);
 }
  
-
-void Caller::create_snp_insert_edges(list<Node*> nodes1, list<Node*> nodes2, list<int> offsets1,
-                                     list<int> offsets2) {
- 
-    assert(nodes1.size() == nodes2.size());
-
-    list<Node*>::iterator i1 = nodes1.begin();
-    list<Node*>::iterator j1 = i1;
-    ++j1;
-    list<Node*>::iterator i2 = nodes2.begin();
-    list<Node*>::iterator j2 = i2;
-    ++j2;
-
-    for (int i = 0; i < nodes1.size() - 1; ++i, ++i1, ++i2, ++j1, ++j2) {
-        if (*i1 != NULL) {
-            if (*j1 != NULL) {
-                NodeOffSide s1(NodeSide((*i1)->id(), true), (*i1)->sequence().length() - 1);
-                NodeOffSide s2(NodeSide((*j1)->id(), false), 0);
-                cerr << "snp 1 edge" << s1.first.node << " " << s1.second << " " <<s1.first.is_end << endl;
-                _augmented_edges.insert(make_pair(s1, s2));
-            }
-            if (*j2 != NULL) {
-                NodeOffSide s1(NodeSide((*i1)->id(), true), (*i1)->sequence().length() - 1);
-                NodeOffSide s2(NodeSide((*j2)->id(), false), 0);
-                cerr << "snp 2 edge" << s1.first.node << " " << s1.second << " " <<s1.first.is_end << endl;
-                _augmented_edges.insert(make_pair(s1, s2));
-            }
-        }
-        if (*i2 != NULL) {
-            if (*j2 != NULL) {
-                NodeOffSide s1(NodeSide((*i2)->id(), true), (*i2)->sequence().length() - 1);
-                NodeOffSide s2(NodeSide((*j2)->id(), false), 0);
-                cerr << "snp 3 edge" << s1.first.node << " " << s1.second << " " <<s1.first.is_end << endl;
-                _augmented_edges.insert(make_pair(s1, s2));
-            }
-            if (*j1 != NULL) {
-                NodeOffSide s1(NodeSide((*i2)->id(), true), (*i2)->sequence().length() - 1);
-                NodeOffSide s2(NodeSide((*j1)->id(), false), 0);
-                cerr << "snp 4 edge" << s1.first.node << " " << s1.second << " " <<s1.first.is_end << endl;                
-                _augmented_edges.insert(make_pair(s1, s2));
-            }
-        }
-    }
-}
-
 
 void Caller::create_snp_path(int64_t snp_node, bool secondary_snp) {
 
@@ -781,7 +740,7 @@ void Caller::write_text_calls(const NodePileup& pileup) {
     }  
 }
 
-void NodeDivider::add_fragment(const Node* orig_node, int offset, Node* fragment) {
+void NodeDivider::add_fragment(const Node* orig_node, int offset, Node* fragment, EntryCat cat) {
 
 //    cerr << "ADD FRAGMENT " << pb2json(*orig_node) << " OFFSET=" << offset << " new NODE "
     //       << pb2json(*fragment) << endl;
@@ -793,23 +752,19 @@ void NodeDivider::add_fragment(const Node* orig_node, int offset, Node* fragment
 
     NodeMap& node_map = i->second;
     NodeMap::iterator j = node_map.find(offset);
+    
     if (j != node_map.end()) {
-        // the only time this should happen is when adding a snp
-        assert(j->second.first != NULL && j->second.second == NULL);
-        assert(j->second.first->sequence().length() == fragment->sequence().length());
-        j->second.second = fragment;
+        assert(j->second[cat] == NULL);
+        j->second[cat] = fragment;
     } else {
-        pair<Node*, Node*> ins_pair(fragment, NULL);
-        j = node_map.insert(make_pair(offset, ins_pair)).first;
+        Entry ins_triple(NULL, NULL, NULL);
+        ins_triple[cat] = fragment;
+        j = node_map.insert(make_pair(offset, ins_triple)).first;
     }
     // sanity checks to make sure we don't introduce an overlap
     if (offset == 0) {
         assert(j == node_map.begin());
-    } else if (j != node_map.begin()) {
-        NodeMap::iterator prev = j;
-        --prev;
-        assert(prev->first + prev->second.first->sequence().length() <= offset);
-    }
+    } 
     if (offset + fragment->sequence().length() == orig_node->sequence().length()) {
         assert(j == --node_map.end());
     } else if (j != --node_map.end()) {
@@ -819,23 +774,23 @@ void NodeDivider::add_fragment(const Node* orig_node, int offset, Node* fragment
     }
 }
             
-pair<Node*, Node*> NodeDivider::break_end(const Node* orig_node, VG* graph, int offset, bool left_side) {
+NodeDivider::Entry NodeDivider::break_end(const Node* orig_node, VG* graph, int offset, bool left_side) {
     NodeHash::iterator i = index.find(orig_node->id());
     if (i == index.end()) {
         cerr << " Index Not Found " << orig_node->id() << " in table of size " << index.size() << endl;
-        return make_pair((Node*)NULL, (Node*)NULL);
+        return Entry((Node*)NULL, (Node*)NULL, (Node*)NULL);
     }
     NodeMap& node_map = i->second;
     NodeMap::iterator j = node_map.upper_bound(offset);
     if (j == node_map.begin()) {
         cerr << " Offset not found " << offset << " in map of size " << node_map.size() << endl;
-        return make_pair((Node*)NULL, (Node*)NULL);
+        return Entry((Node*)NULL, (Node*)NULL, (Node*)NULL);
     }
 
     --j;
     int sub_offset = j->first;
 
-    function<Node*(Node*)>  lambda =[&](Node* fragment) {
+    function<Node*(Node*, EntryCat)>  lambda =[&](Node* fragment, EntryCat cat) {
         if (offset < sub_offset || offset >= sub_offset + fragment->sequence().length()) {
             return (Node*)NULL;
         }
@@ -858,31 +813,25 @@ pair<Node*, Node*> NodeDivider::break_end(const Node* orig_node, VG* graph, int 
 
         // then make a new node for the right part
         Node* new_node = graph->create_node(frag_seq.substr(new_len, frag_seq.length() - new_len), ++(*_max_id));
-        add_fragment(orig_node, sub_offset + new_len, new_node);
+        add_fragment(orig_node, sub_offset + new_len, new_node, cat);
 
         return new_node;
     };
     
-    Node* fragment1 = j->second.first;
-    assert(fragment1 != NULL && fragment1->sequence().length() > 0);
-    Node* new_node1 = lambda(fragment1);
-    Node* fragment2 = NULL;
-    Node* new_node2 = NULL;
-    if (j->second.second != NULL) {
-        fragment2 = j->second.second;
-        new_node2 = lambda(fragment2);
-    }
+    Node* fragment_ref = j->second.ref;
+    Node* new_node_ref = fragment_ref != NULL ? lambda(fragment_ref, Ref) : NULL;
+    Node* fragment_alt1 = j->second.alt1;
+    Node* new_node_alt1 = fragment_alt1 != NULL ? lambda(fragment_alt1, Alt1) : NULL;
+    Node* fragment_alt2 = j->second.alt2;
+    Node* new_node_alt2 = fragment_alt2 != NULL ? lambda(fragment_alt2, Alt2) : NULL;
+
+    Entry ret = left_side ? Entry(new_node_ref, new_node_alt1, new_node_alt2) :
+        Entry(fragment_ref, fragment_alt1, fragment_alt2);
 
     cerr << "Break End " << orig_node->id() << " " << offset << " " << left_side
-         << " --> ";
-    if (left_side && new_node1) {
-        cerr << pb2json(*new_node1);
-        if (new_node2) cerr << " , " << pb2json(*new_node2);
-    } else if (fragment1) {
-        cerr << pb2json(*fragment1);
-        if (fragment2) cerr << " , " << pb2json(*fragment2);
-    } cerr << endl;
-    return left_side ? make_pair(new_node1, new_node2) : make_pair(fragment1, fragment2);
+         << " --> " << ret << endl;
+
+    return ret;
 }
 
 // this function only works if node is completely covered in divider structure,
@@ -890,12 +839,14 @@ list<Mapping> NodeDivider::map_node(int64_t node_id, int64_t start_offset, int64
     NodeHash::iterator i = index.find(node_id);
     assert(i != index.end());
     NodeMap& node_map = i->second;
+    assert(!node_map.empty());
     list<Mapping> out_mappings;
     int cur_len = 0;
     if (!reverse) {
         for (auto i : node_map) {
             if (i.first >= start_offset && cur_len < length) {
-                Node* call_node = i.second.first;
+                Node* call_node = i.second.ref;
+                assert(call_node != NULL);
                 Mapping mapping;
                 mapping.mutable_position()->set_node_id(call_node->id());
                 if (start_offset > i.first && out_mappings.empty()) {
@@ -911,6 +862,7 @@ list<Mapping> NodeDivider::map_node(int64_t node_id, int64_t start_offset, int64
                 edit->set_from_length(map_len);
                 edit->set_to_length(map_len);
                 cur_len += map_len;
+                out_mappings.push_back(mapping);
             }
         }
     } else {
@@ -918,8 +870,7 @@ list<Mapping> NodeDivider::map_node(int64_t node_id, int64_t start_offset, int64
         for (NodeMap::reverse_iterator i = node_map.rbegin(); i != node_map.rend(); ++i)
         {
             if (i->first <= start_offset && cur_len < length) {
-                // todo: is this reference??
-                Node* call_node = i->second.first;
+                Node* call_node = i->second.ref;
                 Mapping mapping;
                 mapping.set_is_reverse(true);
                 mapping.mutable_position()->set_node_id(call_node->id());
@@ -936,6 +887,7 @@ list<Mapping> NodeDivider::map_node(int64_t node_id, int64_t start_offset, int64
                 edit->set_from_length(map_len);
                 edit->set_to_length(map_len);
                 cur_len += map_len;
+                out_mappings.push_back(mapping);
             }
         }
     }
@@ -950,9 +902,24 @@ void NodeDivider::clear() {
 
 ostream& operator<<(ostream& os, const NodeDivider::NodeMap& nm) {
     for (auto& x : nm) {
-        cerr << x.first << "[" << (x.second.first ? x.second.first->id() : -1) << ", "
-             << (x.second.second ? x.second.second->id() : -1) << "]" << endl;
+        os << x.first << "[" << (x.second.ref ? x.second.ref->id() : -1) << ", "
+           << (x.second.alt1 ? x.second.alt1->id() : -1) << ", "
+           << (x.second.alt2 ? x.second.alt2->id() : -1) << "]" << endl;
     }
+    return os;
+}
+
+ostream& operator<<(ostream& os, NodeDivider::Entry entry) {
+    for (int i = 0; i < NodeDivider::EntryCat::Last; ++i) {
+        if (entry[i] != NULL) {
+            os << pb2json(*entry[i]);
+        }
+        else {
+            os << "NULL";
+        }
+        os << ", ";
+    }
+
     return os;
 }
 

@@ -342,7 +342,7 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
             if (seq_reverse) {
                 reverse_complement(seq);
             }            
-            make_delete(seq, node.id(), node_offset, map_reverse);
+            make_delete(seq, aln_reverse, node.id(), node_offset, map_reverse);
             if (_running_del != NULL) {
                 // we are appending onto existing entry
                 // deletes are special in that they can span multiple nodes/edits
@@ -518,7 +518,8 @@ void Pileups::move_non_canonical_deletes(NodePileup* node_pileup) {
                 int64_t to_id;
                 int64_t to_offset;
                 bool to_end;
-                parse_delete(val, len, from_start, to_id, to_offset, to_end);
+                bool reverse;
+                parse_delete(val, reverse, len, from_start, to_id, to_offset, to_end);
                 if (make_pair(make_pair((int64_t)node_pileup->node_id(), offset), from_start) >
                     make_pair(make_pair((int64_t)to_id, to_offset), !to_end)) {
                     // remove from node_pileup
@@ -535,7 +536,7 @@ void Pileups::move_non_canonical_deletes(NodePileup* node_pileup) {
                     NodePileup* tgt_node_pileup = get_create_node_pileup(to_node);
                     BasePileup* tgt_base_pileup = get_create_base_pileup(*tgt_node_pileup, to_offset);
                     string canonical_val;
-                    make_delete(canonical_val, len, !to_end, node_pileup->node_id(), offset, !from_start);
+                    make_delete(canonical_val, reverse, len, !to_end, node_pileup->node_id(), offset, !from_start);
                     tgt_base_pileup->mutable_bases()->append(canonical_val);
                     if (!qual.empty()) {
                         tgt_base_pileup->mutable_qualities()->append(qual);
@@ -613,8 +614,8 @@ void Pileups::parse_base_offsets(const BasePileup& bp,
         } else if (bases[base_offset] == '-') {
             offsets.push_back(make_pair(base_offset, i < quals.length() ? i : -1));
             int64_t lf = base_offset + 1;
-            // eat up four semicolons
-            for (int64_t sc_count = 0; sc_count < 4; ++lf) {
+            // eat up five semicolons
+            for (int64_t sc_count = 0; sc_count < 5; ++lf) {
                 if (bases[lf] == ';') {
                     ++sc_count;
                 }
@@ -657,17 +658,18 @@ void Pileups::make_insert(string& seq, bool is_reverse) {
     seq = ss.str();
 }
 
-void Pileups::make_delete(string& seq, int64_t node_id, int64_t node_offset, bool is_reverse) {
-    int64_t delta = is_reverse ? -seq.length() - 1 : seq.length() + 1;
+void Pileups::make_delete(string& seq, bool is_reverse, int64_t node_id, int64_t node_offset, bool map_reverse) {
+    int64_t delta = map_reverse ? -seq.length() - 1 : seq.length() + 1;
     int64_t dest_offset = node_offset + delta;
     assert(dest_offset >= 0);
-    make_delete(seq, seq.length(), is_reverse, node_id, dest_offset, is_reverse);
+    make_delete(seq, is_reverse, seq.length(), map_reverse, node_id, dest_offset, map_reverse);
 }
 
-void Pileups::make_delete(string& seq, int64_t len, bool from_start, int64_t to_id, int64_t to_offset, bool to_end) {
+void Pileups::make_delete(string& seq, bool is_reverse, int64_t len, bool from_start, int64_t to_id,
+                          int64_t to_offset, bool to_end) {
     // format : -length;from_start;dest_id;dest_offset;to_end
     stringstream ss;
-    ss << "-" << len << from_start << ";" << to_id << ";" << to_offset << ";" << to_end;
+    ss << "-" << len << ";" << is_reverse << ";" << from_start << ";" << to_id << ";" << to_offset << ";" << to_end;
     seq = ss.str();
 }
 
@@ -679,16 +681,19 @@ void Pileups::append_delete(string& bases, const string& seq) {
     // get existing delete at end of bases
     int64_t old_len, old_offset, old_id;
     bool old_from_start, old_to_end;
-    parse_delete(bases.substr(d_start), old_len, old_from_start, old_id, old_offset, old_to_end);
+    bool old_reverse;
+    parse_delete(bases.substr(d_start), old_reverse, old_len, old_from_start, old_id, old_offset, old_to_end);
 
     // parse new delete
     int64_t new_len, new_offset, new_id;
     bool new_from_start, new_to_end;
-    parse_delete(seq, new_len, new_from_start, new_id, new_offset, new_to_end);
+    bool new_reverse;
+    parse_delete(seq, new_reverse, new_len, new_from_start, new_id, new_offset, new_to_end);
+    assert(old_reverse == new_reverse); // no excuse not to be equal
 
     // add together
     string merged_del;
-    make_delete(merged_del, (old_len + new_len), old_from_start, new_id, new_offset, new_to_end);
+    make_delete(merged_del, old_reverse, (old_len + new_len), old_from_start, new_id, new_offset, new_to_end);
     
     bases.erase(d_start);
     bases.append(merged_del);
@@ -705,18 +710,19 @@ void Pileups::parse_insert(const string& tok, int64_t& len, string& seq, bool& i
     is_reverse = ::islower(seq[0]);
 }
 
-void Pileups::parse_delete(const string& tok, int64_t& len, bool& from_start, int64_t& to_id, int64_t& to_offset,
-                           bool& to_end)
+void Pileups::parse_delete(const string& tok, bool& reverse, int64_t& len, bool& from_start, int64_t& to_id,
+                           int64_t& to_offset, bool& to_end)
 {
     assert(tok[0] == '-');
     vector<string> toks;
     split_delims(tok, ";", toks);
-    assert(toks.size() == 5);
+    assert(toks.size() == 6);
     len = -atoi(toks[0].c_str());
-    from_start = toks[1] != "0";
-    to_id = atoi(toks[2].c_str());
-    to_offset = atoi(toks[3].c_str());
-    to_end = toks[4] != "0";
+    reverse = toks[1] != "0";
+    from_start = toks[2] != "0";
+    to_id = atoi(toks[3].c_str());
+    to_offset = atoi(toks[4].c_str());
+    to_end = toks[5] != "0";
 }
     
 bool Pileups::base_equal(char c1, char c2, bool is_reverse) {
@@ -764,7 +770,7 @@ string Pileups::extract(const BasePileup& bp, int64_t offset) {
         // todo : consolidate deletion parsing code better than this
         int64_t sc = 0;
         int64_t i = offset;
-        for (; sc < 4; ++i) {
+        for (; sc < 5; ++i) {
             if (bases[i] == ';') {
                 ++sc;
             }
