@@ -62,6 +62,7 @@ void Caller::clear() {
     _visited_nodes.clear();
     _called_edges.clear();
     _augmented_edges.clear();
+    _inserted_nodes.clear();
 }
 
 void Caller::write_call_graph(ostream& out, bool json) {
@@ -110,11 +111,6 @@ void Caller::call_node_pileup(const NodePileup& pileup) {
     // (_side_map gets updated)
     create_node_calls(pileup);
 
-    // stream out vcf-like text of calls if desired
-    if (_text_calls != NULL) {
-        write_text_calls(pileup);
-    }
-
     _visited_nodes.insert(_node->id());
 }
 
@@ -135,7 +131,7 @@ void Caller::update_call_graph() {
         function<void(Node*)> add_node = [&](Node* node) {
             if (_visited_nodes.find(node->id()) == _visited_nodes.end()) {
                 Node* call_node = _call_graph.create_node(node->sequence(), node->id());
-                _node_divider.add_fragment(node, 0, call_node, NodeDivider::EntryCat::Ref);
+                _node_divider.add_fragment(node, 0, call_node, NodeDivider::EntryCat::Ref, (char)0);
             }
         };
         _graph->for_each_node(add_node);
@@ -146,7 +142,8 @@ void Caller::update_call_graph() {
     function<void(Edge*)> map_edge = [&](Edge* edge) {
         pair<NodeSide, NodeSide> sides = NodeSide::pair_from_edge(edge);
         // skip uncalled edges if not writing augmented graph
-        if (!_leave_uncalled && _called_edges.find(sides) == _called_edges.end()) {
+        bool called = _called_edges.find(sides) != _called_edges.end();
+        if (!_leave_uncalled && !called) {
             return;
         }
         
@@ -156,13 +153,16 @@ void Caller::update_call_graph() {
         int from_offset = edge->from_start() ? 0 : side1->sequence().length() - 1;
         int to_offset = edge->to_end() ? side2->sequence().length() - 1 : 0;
         cerr << "(orig) ";
+        char cat = called ? 'R' : 'U';
         create_augmented_edge(side1, from_offset, !sides.first.is_end, true,
-                              side2, to_offset, !sides.second.is_end, true);
+                              side2, to_offset, !sides.second.is_end, true, cat);
     };            
 
     function<void(bool)> process_augmented_edges = [&](bool pass1) {
         for (auto& i : _augmented_edges) {
-            NodeOffSide os1 = i.first;
+            auto& sides = i.first;
+            char cat = i.second;
+            NodeOffSide os1 = sides.first;
             Node* node1;
             bool aug1;
             if (_graph->has_node(os1.first.node)) {
@@ -177,7 +177,7 @@ void Caller::update_call_graph() {
             }
             int from_offset = os1.second;
             bool left1 = !os1.first.is_end;
-            NodeOffSide os2 = i.second;
+            NodeOffSide os2 = sides.second;
             Node* node2;
             bool aug2;
             if (_graph->has_node(os2.first.node)) {
@@ -192,8 +192,8 @@ void Caller::update_call_graph() {
             bool left2 = !os2.first.is_end;
             // todo: clean this up
             if (!pass1) {
-                cerr << "(pass2) i=" << i.first << ", " << i.second << "  ";
-                create_augmented_edge(node1, from_offset, left1, aug1,  node2, to_offset, left2, aug2);
+                cerr << "(pass2) i=" << sides.first << ", " << sides.second << "  ";
+                create_augmented_edge(node1, from_offset, left1, aug1,  node2, to_offset, left2, aug2, cat);
             } else {
                 _node_divider.break_end(node1, &_call_graph, from_offset, left1);
                 _node_divider.break_end(node2, &_call_graph, to_offset, left2);
@@ -208,6 +208,15 @@ void Caller::update_call_graph() {
     process_augmented_edges(false);
     cerr << "PASS 3 " << endl;
     _graph->for_each_edge(map_edge);
+
+    // write out all the nodes in the divider structure to tsv
+    if (_text_calls != NULL) {
+        write_nd_tsv();
+        // add on the inserted nodes
+        for (auto n : _inserted_nodes) {
+            write_node_tsv(n.first, 'I', n.second);
+        }
+    }
     
     // make sure paths are saved
     _call_graph.paths.rebuild_node_mapping();
@@ -262,7 +271,7 @@ void Caller::map_paths() {
 }
 
 void Caller::create_augmented_edge(Node* node1, int from_offset, bool left_side1, bool aug1,
-                                   Node* node2, int to_offset, bool left_side2, bool aug2) {
+                                   Node* node2, int to_offset, bool left_side2, bool aug2, char cat) {
     NodeDivider::Entry call_sides1;
     NodeDivider::Entry call_sides2;
 
@@ -270,13 +279,13 @@ void Caller::create_augmented_edge(Node* node1, int from_offset, bool left_side1
         call_sides1 = _node_divider.break_end(node1, &_call_graph, from_offset,
                                               left_side1);
     } else {
-        call_sides1 = NodeDivider::Entry(node1, NULL, NULL);
+        call_sides1 = NodeDivider::Entry(node1);
     }
     if (aug2) {
         call_sides2 = _node_divider.break_end(node2, &_call_graph, to_offset,
                                               left_side2);
     } else {
-        call_sides2 = NodeDivider::Entry(node2, NULL, NULL);
+        call_sides2 = NodeDivider::Entry(node2);
     }
     
     cerr << "Input Edge " << node1->id() << ":" << from_offset << ",l=" << left_side1 << ",a=" << aug1
@@ -294,8 +303,17 @@ void Caller::create_augmented_edge(Node* node1, int from_offset, bool left_side1
     for (int i = 0; i < (int)NodeDivider::EntryCat::Last; ++i) {
         for (int j = 0; j < (int)NodeDivider::EntryCat::Last; ++j) {
             if (call_sides1[i] != NULL && call_sides2[j] != NULL) {
-                _call_graph.create_edge(call_sides1[i], call_sides2[j],
-                                        left_side1, !left_side2);
+                NodeSide side1(call_sides1[i]->id(), !left_side1);
+                NodeSide side2(call_sides2[j]->id(), !left_side2);
+                if (!_call_graph.has_edge(side1, side2)) {
+                    Edge* edge = _call_graph.create_edge(call_sides1[i], call_sides2[j],
+                                                         left_side1, !left_side2);
+                    // only do deletion edges for now, worried about case where
+                    // other edges get written twice with different cats making something unstable. 
+                    if (cat == 'L' && _text_calls != NULL) {
+                        write_edge_tsv(edge, cat);
+                    }
+                }
             }
         }
     }
@@ -556,18 +574,19 @@ void Caller::create_node_calls(const NodePileup& np) {
             }        
             else if (cat == 1 || (cat == 0 && _leave_uncalled)) {
                 // add reference
+                int cn = cat == 1 ? 2 : 0;
                 cerr << "Ref/Ref" << endl;
                 string new_seq = seq.substr(cur, next - cur);
                 Node* node = _call_graph.create_node(new_seq, ++_max_id);
-                _node_divider.add_fragment(_node, cur, node, NodeDivider::EntryCat::Ref);
+                _node_divider.add_fragment(_node, cur, node, NodeDivider::EntryCat::Ref, (char)cn);
                 // bridge to node
                 NodeOffSide no1(NodeSide(_node->id(), true), cur-1);
                 NodeOffSide no2(NodeSide(node->id(), false), cur);
-                _augmented_edges.insert(make_pair(no1, no2));
+                _augmented_edges[make_pair(no1, no2)] = 'R';
                 // bridge from node
                 no1 = NodeOffSide(NodeSide(node->id(), true), next-1);
                 no2 = NodeOffSide(NodeSide(_node->id(), false), next);
-                _augmented_edges.insert(make_pair(no1, no2));
+                _augmented_edges[make_pair(no1, no2)] = 'R';
             }
             
             else {
@@ -577,36 +596,38 @@ void Caller::create_node_calls(const NodePileup& np) {
                 function<void(string&, string&, NodeDivider::EntryCat)>  call_het =
                     [&](string& call1, string& call2, NodeDivider::EntryCat altCat) {
                 
-                    if (call1 == "." || (_leave_uncalled && call1 == "-")) {
+                    if (call1 == "." || (_leave_uncalled && altCat == NodeDivider::EntryCat::Alt1 &&
+                                         call2 != "." && !(call1 == "-" && call1.length() > 1))) {
                         // reference base
+                        int cn = call1 == "." ? 1 : 0;
                         string new_seq = seq.substr(cur, 1);
                         Node* node = _call_graph.create_node(new_seq, ++_max_id);
-                        _node_divider.add_fragment(_node, cur, node, NodeDivider::EntryCat::Ref);
+                        _node_divider.add_fragment(_node, cur, node, NodeDivider::EntryCat::Ref, (char)cn);
                         cerr << "REF NODE " << pb2json(*node) << endl;
                         // bridge to node
                         NodeOffSide no1(NodeSide(_node->id(), true), cur-1);
                         NodeOffSide no2(NodeSide(node->id(), false), cur);
-                        _augmented_edges.insert(make_pair(no1, no2));
+                        _augmented_edges[make_pair(no1, no2)] = 'R';
                         // bridge from node
                         no1 = NodeOffSide(NodeSide(node->id(), true), next-1);
                         no2 = NodeOffSide(NodeSide(_node->id(), false), next);
-                        _augmented_edges.insert(make_pair(no1, no2));
+                        _augmented_edges[make_pair(no1, no2)] = 'R';
                     }
                     else if (call1[0] != '-' && call1[0] != '+' && call1[0] != '-') {
                         // snp base
                         string new_seq = call1;
                         Node* node = _call_graph.create_node(new_seq, ++_max_id);
-                        _node_divider.add_fragment(_node, cur, node, altCat);
+                        _node_divider.add_fragment(_node, cur, node, altCat, (char)1);
                         cerr << "SNP NODE (" << call1 << ") " << pb2json(*node) << endl;
 
                         // bridge to node
                         NodeOffSide no1(NodeSide(_node->id(), true), cur-1);
                         NodeOffSide no2(NodeSide(node->id(), false), cur);
-                        _augmented_edges.insert(make_pair(no1, no2));
+                        _augmented_edges[make_pair(no1, no2)] = 'S';
                         // bridge from node
                         no1 = NodeOffSide(NodeSide(node->id(), true), next-1);
                         no2 = NodeOffSide(NodeSide(_node->id(), false), next);
-                        _augmented_edges.insert(make_pair(no1, no2));
+                        _augmented_edges[make_pair(no1, no2)] = 'S';
                     }
                     else if (call1[0] == '-' && call1.length() > 1) {
                         // delete
@@ -629,7 +650,7 @@ void Caller::create_node_calls(const NodePileup& np) {
                         cerr << "deletion break to " << node2->id() << " " << to_offset << " " << !to_end << endl;
                         //_node_divider.break_end(node2, _graph, to_offset, !to_end);
                         cerr << "delete " << s1 << " -> " << s2 << endl;
-                        _augmented_edges.insert(make_pair(s1, s2));
+                        _augmented_edges[make_pair(s1, s2)] = 'L';
                         // also need to bridge any fragments created above
                         if ((from_start && from_offset > 0) ||
                             (!from_start && from_offset < _node->sequence().length() - 1)) {
@@ -637,14 +658,19 @@ void Caller::create_node_calls(const NodePileup& np) {
                             NodeOffSide no2(NodeSide(from_id, from_start),
                                             (from_start ? from_offset - 1 : from_offset + 1));
                             cerr << "Bridge S " << no1 << " -> " << no2 << endl;
-                            //_augmented_edges.insert(make_pair(no1, no2));
+                            if (_augmented_edges.find(make_pair(no1, no2)) == _augmented_edges.end()) {
+                                _augmented_edges[make_pair(no1, no2)] = 'R';
+                            }
                         }
                         if ((!to_end && to_offset > 0) ||
                             (to_end && to_offset < node2->sequence().length() - 1)) {
                             NodeOffSide no1(NodeSide(to_id, to_end), to_offset);
                             NodeOffSide no2(NodeSide(to_id, !to_end), !to_end ? to_offset - 1 : to_offset + 1);
                             cerr << "Bridge D " << no1 << " -> " << no2 << endl;
-                            _augmented_edges.insert(make_pair(no2, no1));
+                            if (_augmented_edges.find(make_pair(no1, no2)) == _augmented_edges.end()) {
+                                _augmented_edges[make_pair(no1, no2)] = 'R';
+                            }
+
                         }
                     }
                 };
@@ -663,15 +689,17 @@ void Caller::create_node_calls(const NodePileup& np) {
                     Pileups::parse_insert(ins_call1, ins_len, ins_seq, ins_rev);
                     // todo: check reverse?
                     Node* node = _call_graph.create_node(ins_seq, ++_max_id);
+                    int cn = ins_call2[0] == '+' ? 2 : 1;
+                    _inserted_nodes.push_back(make_pair(node, cn));
 
                     // bridge to insert
                     NodeOffSide no1(NodeSide(_node->id(), true), next-1);
                     NodeOffSide no2(NodeSide(node->id(), false), 0);
-                    _augmented_edges.insert(make_pair(no2, no1));
+                    _augmented_edges[make_pair(no2, no1)] = 'I';
                     // bridge from insert
                     no1 = NodeOffSide(NodeSide(node->id(), true), node->sequence().length() - 1);
                     no2 = NodeOffSide(NodeSide(_node->id(), false), next);
-                    _augmented_edges.insert(make_pair(no2, no1));
+                    _augmented_edges[make_pair(no2, no1)] = 'I';
                 }
             };
             
@@ -685,62 +713,36 @@ void Caller::create_node_calls(const NodePileup& np) {
         }
     }
 }
- 
 
-void Caller::create_snp_path(int64_t snp_node, bool secondary_snp) {
+void Caller::write_node_tsv(Node* node, char call, char cn)
+{
+    *_text_calls << "N\t" << node->id() << "\t" << call << "\t" << (int)cn << "\n";
+}
 
-    // for now we don't write secdonary snp, so we have 1 path per *site*
-    // and counting paths will give us somethign comparable to snp count
-    // from bcftools
-    if (!secondary_snp) {
-        stringstream name;
-        name << "SNP_" << snp_node;
+void Caller::write_edge_tsv(Edge* edge, char call, char cn)
+{
+    *_text_calls << "E\t" << edge->from() << "," << edge->from_start() << "," 
+                 << edge->to() << "," << edge->to_end() << "\t" << call << "\t" << cn << "\n";
+}
 
-        Mapping mapping;
-        Position* pos = mapping.mutable_position();
-        // make path that covers node forward with no edits.  not super
-        // useful but will use to count snps... 
-        pos->set_node_id(snp_node);
-        pos->set_offset(0);
-        mapping.set_is_reverse(false);
-        
-        // note: create_path doesn't seem to work.. too rushed to look into
-        //list<Mapping>& mappings = _call_graph.paths.create_path(name.str());
-
-        list<Mapping> mappings;
-        mappings.push_back(mapping);
-        _call_graph.paths._paths.insert(make_pair(name.str(), mappings));
+void Caller::write_nd_tsv()
+{
+    for (auto& i : _node_divider.index) {
+        for (auto& j : i.second) {
+            NodeDivider::Entry& entry = j.second;
+            char call = entry.cn_ref == 0 ? 'U' : 'R';
+            write_node_tsv(entry.ref, call, entry.cn_ref);
+            if (entry.alt1 != NULL) {
+                write_node_tsv(entry.alt1, 'S', entry.cn_alt1);
+            }
+            if (entry.alt2 != NULL) {
+                write_node_tsv(entry.alt2, 'S', entry.cn_alt2);
+            }
+        }
     }
 }
 
-void Caller::write_text_calls(const NodePileup& pileup) {
-  
-    int n = _node->sequence().length();
-    assert (_node_calls.size() >= n);
-    assert (pileup.node_id() == _node->id());
-    assert (pileup.base_pileup_size() >= n);
-    const string& seq = _node->sequence();
-
-    const string cat[3] = {"MISSING", "REF", "SNP"};
-
-    for (int i = 0; i < n; ++i) {
-      
-        // use 1-based coordinates like vcf
-        *_text_calls << _node->id() << "\t" << (i + 1) << "\t"
-            // reference base
-                     << seq[i] << "\t"
-            // two comma-separated alternate bases
-                     << _node_calls[i].first << "," << _node_calls[i].second << "\t"
-            // category
-                     << cat[call_cat(_node_calls[i])] << "\t"
-            // likelihood
-                     << _node_likelihoods[i] << "\t"
-            // pileup for debugging
-                     << pileup.base_pileup(i).bases() << "\n";
-    }  
-}
-
-void NodeDivider::add_fragment(const Node* orig_node, int offset, Node* fragment, EntryCat cat) {
+void NodeDivider::add_fragment(const Node* orig_node, int offset, Node* fragment, EntryCat cat, int cn) {
 
 //    cerr << "ADD FRAGMENT " << pb2json(*orig_node) << " OFFSET=" << offset << " new NODE "
     //       << pb2json(*fragment) << endl;
@@ -756,9 +758,11 @@ void NodeDivider::add_fragment(const Node* orig_node, int offset, Node* fragment
     if (j != node_map.end()) {
         assert(j->second[cat] == NULL);
         j->second[cat] = fragment;
+        j->second.cn(cat) = cn;
     } else {
-        Entry ins_triple(NULL, NULL, NULL);
+        Entry ins_triple;
         ins_triple[cat] = fragment;
+        ins_triple.cn(cat) = cn;
         j = node_map.insert(make_pair(offset, ins_triple)).first;
     }
     // sanity checks to make sure we don't introduce an overlap
@@ -778,19 +782,19 @@ NodeDivider::Entry NodeDivider::break_end(const Node* orig_node, VG* graph, int 
     NodeHash::iterator i = index.find(orig_node->id());
     if (i == index.end()) {
         cerr << " Index Not Found " << orig_node->id() << " in table of size " << index.size() << endl;
-        return Entry((Node*)NULL, (Node*)NULL, (Node*)NULL);
+        return Entry();
     }
     NodeMap& node_map = i->second;
     NodeMap::iterator j = node_map.upper_bound(offset);
     if (j == node_map.begin()) {
         cerr << " Offset not found " << offset << " in map of size " << node_map.size() << endl;
-        return Entry((Node*)NULL, (Node*)NULL, (Node*)NULL);
+        return Entry();
     }
 
     --j;
     int sub_offset = j->first;
 
-    function<Node*(Node*, EntryCat)>  lambda =[&](Node* fragment, EntryCat cat) {
+    function<Node*(Node*, EntryCat, char)>  lambda =[&](Node* fragment, EntryCat cat, char cn) {
         if (offset < sub_offset || offset >= sub_offset + fragment->sequence().length()) {
             return (Node*)NULL;
         }
@@ -813,20 +817,24 @@ NodeDivider::Entry NodeDivider::break_end(const Node* orig_node, VG* graph, int 
 
         // then make a new node for the right part
         Node* new_node = graph->create_node(frag_seq.substr(new_len, frag_seq.length() - new_len), ++(*_max_id));
-        add_fragment(orig_node, sub_offset + new_len, new_node, cat);
+        add_fragment(orig_node, sub_offset + new_len, new_node, cat, cn);
 
         return new_node;
     };
-    
-    Node* fragment_ref = j->second.ref;
-    Node* new_node_ref = fragment_ref != NULL ? lambda(fragment_ref, Ref) : NULL;
-    Node* fragment_alt1 = j->second.alt1;
-    Node* new_node_alt1 = fragment_alt1 != NULL ? lambda(fragment_alt1, Alt1) : NULL;
-    Node* fragment_alt2 = j->second.alt2;
-    Node* new_node_alt2 = fragment_alt2 != NULL ? lambda(fragment_alt2, Alt2) : NULL;
 
-    Entry ret = left_side ? Entry(new_node_ref, new_node_alt1, new_node_alt2) :
-        Entry(fragment_ref, fragment_alt1, fragment_alt2);
+    // none of this affects copy number
+    char cn_ref = j->second.cn_ref;
+    Node* fragment_ref = j->second.ref;
+    Node* new_node_ref = fragment_ref != NULL ? lambda(fragment_ref, Ref, cn_ref) : NULL;
+    char cn_alt1 = j->second.cn_alt1;
+    Node* fragment_alt1 = j->second.alt1;
+    Node* new_node_alt1 = fragment_alt1 != NULL ? lambda(fragment_alt1, Alt1, cn_alt1) : NULL;
+    char cn_alt2 = j->second.cn_alt2;
+    Node* fragment_alt2 = j->second.alt2;
+    Node* new_node_alt2 = fragment_alt2 != NULL ? lambda(fragment_alt2, Alt2, cn_alt2) : NULL;
+
+    Entry ret = left_side ? Entry(new_node_ref, cn_ref, new_node_alt1, cn_alt1, new_node_alt2, cn_alt2) :
+        Entry(fragment_ref, cn_ref, fragment_alt1, cn_alt1, fragment_alt2, cn_alt2);
 
     cerr << "Break End " << orig_node->id() << " " << offset << " " << left_side
          << " --> " << ret << endl;

@@ -161,6 +161,7 @@ void Pileups::compute_from_alignment(Alignment& alignment) {
     vector<int64_t> in_read_offsets(path.mapping_size());
     vector<int64_t> out_read_offsets(path.mapping_size());
     _running_del = NULL;
+    cerr << "doing nodes" << endl;
     for (int i = 0; i < path.mapping_size(); ++i) {
         const Mapping& mapping = path.mapping(i);
         if (_graph->has_node(mapping.position().node_id())) {
@@ -233,6 +234,7 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
                                 const Node& node, const Alignment& alignment,
                                 const Mapping& mapping, const Edit& edit,
                                 const vector<int>& mismatch_counts) {
+    cerr << "start edit " << pb2json(edit) << endl;
     string seq = edit.sequence();
     // is the mapping reversed wrt read sequence? use for iterating
     bool map_reverse = mapping.is_reverse();
@@ -337,7 +339,7 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
             assert(edit.sequence().empty());
             int64_t del_start = !map_reverse ? node_offset - 1:
                 node_offset - edit.from_length();
-            seq = node.sequence().substr(del_start, edit.from_length());
+            seq = node.sequence().substr(max((int64_t)0, del_start), edit.from_length());
             // add deletion string to bases field
             if (seq_reverse) {
                 reverse_complement(seq);
@@ -369,6 +371,7 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
         // stay put on read, move left/right depending on strand on reference
         node_offset += delta;
     }
+    cerr << "end edit " << pb2json(edit) << endl;
 }
 
 void Pileups::count_mismatches(VG& graph, const Path& path,

@@ -500,8 +500,8 @@ void help_call(char** argv) {
          << "    -q, --default_read_qual phred quality score to use if none found in the pileup (default="
          << (int)Caller::Default_default_quality << ")" << endl
          << "    -b, --max_strand_bias N limit to absolute difference between 0.5 and proportion of supporting reads on reverse strand. (default=" << Caller::Default_max_strand_bias << ")" << endl
-         << "    -l, --leave_uncalled    leave un-called graph regions in output" << endl
-         << "    -c, --calls CALLS       write calls for each base in VCF-like text file CALLS." << endl
+         << "    -l, --leave_uncalled    leave un-called graph regions in output, producing augmented graph" << endl
+         << "    -c, --calls TSV         write extra call information in TSV (must use with -l)" << endl
          << "    -j, --json              output in JSON" << endl
          << "    -p, --progress          show progress" << endl
          << "    -t, --threads N         number of threads to use" << endl;
@@ -606,6 +606,11 @@ int main_call(int argc, char** argv) {
     }
     omp_set_num_threads(thread_count);
     thread_count = get_thread_count();
+
+    if (!leave_uncalled && !calls_file.empty()) {
+        cerr << "-c can only be used with -l";
+        exit(1);
+    }
 
     // read the graph
     if (optind >= argc) {

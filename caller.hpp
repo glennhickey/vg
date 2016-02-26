@@ -26,11 +26,19 @@ using namespace std;
 struct NodeDivider {
     // up to three fragments per position in augmented graph
     enum EntryCat {Ref = 0, Alt1, Alt2, Last};
-    struct Entry { Entry(Node* r = 0, Node* a1 = 0, Node* a2 = 0) : ref(r), alt1(a1), alt2(a2) {}
+    struct Entry { Entry(Node* r = 0, char cn_r = (char)0,
+                         Node* a1 = 0, char cn_a1 = (char)0,
+                         Node* a2 = 0, char cn_a2 = (char)0) : ref(r), alt1(a1), alt2(a2),
+                                                               cn_ref(cn_r), cn_alt1(cn_a1), cn_alt2(cn_a2){}
         Node* ref; Node* alt1; Node* alt2;
+        char cn_ref; char cn_alt1; char cn_alt2;
         Node*& operator[](int i) {
             assert(i >= 0 && i <= 2);
             return i == EntryCat::Ref ? ref : (i == EntryCat::Alt1 ? alt1 : alt2);
+        }
+        char& cn(int i) {
+            assert(i >= 0 && i <= 2);
+            return i == EntryCat::Ref ? cn_ref : (i == EntryCat::Alt1 ? cn_alt1 : cn_alt2);
         }
     };
     // offset in original graph node -> up to 2 nodes in call graph
@@ -41,7 +49,7 @@ struct NodeDivider {
     int64_t* _max_id;
     // map given node to offset i of node with id in original graph
     // this function can never handle overlaps (and should only be called before break_end)
-    void add_fragment(const Node* orig_node, int offset, Node* subnode, EntryCat cat);
+    void add_fragment(const Node* orig_node, int offset, Node* subnode, EntryCat cat, int cn);
     // break node if necessary so that we can attach edge at specified side
     // this function wil return NULL if there's no node covering the given location
     Entry break_end(const Node* orig_node, VG* graph, int offset, bool left_side);
@@ -124,7 +132,11 @@ public:
     // deletes can don't necessarily need to be in incident to node ends
     // so we throw in an offset into the mix. 
     typedef pair<NodeSide, int> NodeOffSide;
-    unordered_set<pair<NodeOffSide, NodeOffSide> > _augmented_edges;
+    // map a call category to an edge
+    typedef unordered_map<pair<NodeOffSide, NodeOffSide>, char> EdgeHash;
+    EdgeHash _augmented_edges;
+    // keep track of inserted nodes for tsv output
+    vector<pair<Node*, int> > _inserted_nodes;
 
     // used to favour homozygous genotype (r from MAQ paper)
     double _het_log_prior;
@@ -193,30 +205,12 @@ public:
     void create_node_calls(const NodePileup& np);
 
     void create_augmented_edge(Node* node1, int from_offset, bool left_side1, bool aug1,
-                               Node* node2, int to_offset, bool left_side2, bool aug2);
+                               Node* node2, int to_offset, bool left_side2, bool aug2, char cat);
 
-    // make a path corresponding to a snp in the call grpah
-    void create_snp_path(int64_t snp_node, bool secondary_snp);
-
-    // write out vcf-like text calls for a node
-    void write_text_calls(const NodePileup& pileup);
-
-    // convert nucleotide base into integer
-    static int nidx(char c) {
-        c = ::toupper(c);
-        switch (c) {
-        case 'A': return 0;
-        case 'C': return 1;
-        case 'G': return 2;
-        case 'T': return 3;
-        }
-        return 4;
-    }
-
-    // and back
-    static char idxn(int i) {
-        return "ACGTN"[i];
-    }
+    // write calling info to tsv to help with VCF conversion
+    void write_node_tsv(Node* node, char call, char cn);
+    void write_edge_tsv(Edge* edge, char call, char cn = '.');
+    void write_nd_tsv();
 
     // log function that tries to avoid 0s
     static double safe_log(double v) {
@@ -232,22 +226,22 @@ public:
     }
 
     // call missing
-    bool missing_call(const Genotype& g) {
+    static bool missing_call(const Genotype& g) {
         return g.first == "-" &&  g.second == "-";
     }
 
     // call is reference
-    bool ref_call(const Genotype& g) {
+    static bool ref_call(const Genotype& g) {
         return g.first == "." && (g.second == "." || g.second == "-");
     }
 
     // call is snp
-    bool snp_call(const Genotype& g) {
+    static bool snp_call(const Genotype& g) {
         return !missing_call(g) && !ref_call(g);
     }
 
     // classify call as 0: missing 1: reference 2: snp
-    int call_cat(const Genotype&g) {
+    static int call_cat(const Genotype&g) {
         if (missing_call(g)) {
             return 0;
         } else if (ref_call(g)) {
