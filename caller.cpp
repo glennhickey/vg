@@ -150,8 +150,8 @@ void Caller::update_call_graph() {
         Node* side1 = _graph->get_node(sides.first.node);
         Node* side2 = _graph->get_node(sides.second.node);
         // find up to two nodes matching side1 in the call graph
-        int from_offset = edge->from_start() ? 0 : side1->sequence().length() - 1;
-        int to_offset = edge->to_end() ? side2->sequence().length() - 1 : 0;
+        int from_offset = !sides.first.is_end ? 0 : side1->sequence().length() - 1;
+        int to_offset = sides.second.is_end ? side2->sequence().length() - 1 : 0;
         cerr << "(orig) ";
         char cat = called ? 'R' : 'U';
         create_augmented_edge(side1, from_offset, !sides.first.is_end, true,
@@ -335,7 +335,6 @@ void Caller::call_base_pileup(const NodePileup& np, int64_t offset, bool inserti
     int second_rev_count;
     compute_top_frequencies(bp, base_offsets, top_base, top_count, top_rev_count,
                             second_base, second_count, second_rev_count, insertion);
-    cerr << "top " << top_base <<":" << top_count << " 2nd " << second_base << ":" << second_count;
 
     // note first and second base will be upper case too
     string ref_base = string(1, ::toupper(bp.ref_base()));
@@ -703,7 +702,6 @@ void Caller::create_node_calls(const NodePileup& np) {
                 }
             };
             
-            cerr << "ins " << cur << " " << _insert_calls[cur].first << ", " << _insert_calls[cur].second << endl;
             call_inserts(_insert_calls[next-1].first, _insert_calls[next-1].second);
             call_inserts(_insert_calls[next-1].second, _insert_calls[next-1].first);
                 
