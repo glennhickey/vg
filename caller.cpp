@@ -880,12 +880,13 @@ list<Mapping> NodeDivider::map_node(int64_t node_id, int64_t start_offset, int64
                 Mapping mapping;
                 mapping.set_is_reverse(true);
                 mapping.mutable_position()->set_node_id(call_node->id());
-                if (start_offset > i->first && out_mappings.empty()) {
+                if (start_offset >= i->first && start_offset < i->first + call_node->sequence().length() - 1) {
+                    assert(out_mappings.empty());
                     mapping.mutable_position()->set_offset(start_offset - i->first);
                 } else {
-                    mapping.mutable_position()->set_offset(0);
+                    mapping.mutable_position()->set_offset(i->first + call_node->sequence().length() - 1);
                 }
-                int map_len = call_node->sequence().length() - mapping.position().offset();
+                int map_len = mapping.position().offset() + 1;
                 if (map_len + cur_len > length) {
                     map_len = length - cur_len;
                 }
