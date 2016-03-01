@@ -292,7 +292,7 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
         _running_del = NULL;
         if (pass_filter(alignment, read_offset, mismatch_counts)) {
             if (seq_reverse) {
-                reverse_complement(seq);
+                seq = reverse_complement(seq);
             }
             make_insert(seq, aln_reverse);
             assert(edit.from_length() == 0);
@@ -342,7 +342,7 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
             seq = node.sequence().substr(max((int64_t)0, del_start), edit.from_length());
             // add deletion string to bases field
             if (seq_reverse) {
-                reverse_complement(seq);
+                seq = reverse_complement(seq);
             }            
             make_delete(seq, aln_reverse, node.id(), node_offset, map_reverse);
             if (_running_del != NULL) {
@@ -506,15 +506,21 @@ void Pileups::move_non_canonical_deletes(NodePileup* node_pileup) {
         BasePileup* base_pileup = get_base_pileup(*node_pileup, offset);
         // should we try speeding this up?
         vector<pair<int64_t, int64_t> > bp_offsets;
-        int64_t delta = 0;
-        int64_t qdelta = 0;
+        string new_bases;
+        string new_qualities;
+        int new_num_bases = 0;
         parse_base_offsets(*base_pileup, bp_offsets);
-        for (auto bpo : bp_offsets) {
-            if (base_pileup->bases()[bpo.first] == '-') {
-                string val = Pileups::extract(*base_pileup, bpo.first - delta);
+        for (int i = 0; i < bp_offsets.size(); ++i) {
+            int bpo = bp_offsets[i].first;
+            int qo = bp_offsets[i].second;
+            int val_len = i < bp_offsets.size() - 1 ? bp_offsets[i+1].first - bpo :
+                base_pileup->bases().length() - bpo;
+            string val = base_pileup->bases().substr(bpo, val_len);
+            bool keep = true;
+            if (val[0] == '-') {
                 string qual;
                 if (base_pileup->qualities().length() > 0) {
-                    qual = base_pileup->qualities().substr(bpo.second - qdelta, 1);
+                    qual = base_pileup->qualities().substr(qo, 1);
                 }
                 int64_t len;
                 bool from_start;
@@ -525,15 +531,6 @@ void Pileups::move_non_canonical_deletes(NodePileup* node_pileup) {
                 parse_delete(val, reverse, len, from_start, to_id, to_offset, to_end);
                 if (make_pair(make_pair((int64_t)node_pileup->node_id(), offset), from_start) >
                     make_pair(make_pair((int64_t)to_id, to_offset), !to_end)) {
-                    // remove from node_pileup
-                    base_pileup->mutable_bases()->erase(bpo.first - delta, val.length());
-                    base_pileup->set_num_bases(base_pileup->num_bases() - 1);
-                    if (base_pileup->qualities().length() > 0) {
-                        base_pileup->mutable_qualities()->erase(bpo.first - qdelta, 1);
-                    }
-                    delta += val.length();
-                    ++qdelta;
-                    
                     // make canonical version by flipping start and end
                     Node* to_node = _graph->get_node(to_id);
                     NodePileup* tgt_node_pileup = get_create_node_pileup(to_node);
@@ -544,8 +541,22 @@ void Pileups::move_non_canonical_deletes(NodePileup* node_pileup) {
                     if (!qual.empty()) {
                         tgt_base_pileup->mutable_qualities()->append(qual);
                     }
-                }
+                    keep = false;
+                } 
             }
+            if (keep == true) {
+                // preserve 
+                new_bases += val;
+                if (base_pileup->qualities().length() > 0) {
+                    new_qualities += base_pileup->qualities()[qo];
+                }
+                ++new_num_bases;
+            }
+        }
+        if (new_num_bases < base_pileup->num_bases()) {
+            *base_pileup->mutable_bases() = new_bases;
+            *base_pileup->mutable_qualities() = new_qualities;
+            base_pileup->set_num_bases(new_num_bases);
         }
     }
 }
