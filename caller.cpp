@@ -352,7 +352,9 @@ void Caller::call_base_pileup(const NodePileup& np, int64_t offset, bool inserti
     double& base_likelihood = insertion ? _insert_likelihoods[offset] : _node_likelihoods[offset];
     base_likelihood = mp_snp_genotype(bp, base_offsets, top_base, second_base, g);
     Genotype& base_call = insertion ? _insert_calls[offset] : _node_calls[offset];
-    //cerr << " g= " << g.first << ", " << g.second <<  " l=" << base_likelihood << " min=" <<_min_log_likelihood << endl;
+    cerr << " g= " << g.first << ", " << g.second <<  "(" << top_count << "," << second_count <<") l="
+         << base_likelihood << " min=" <<_min_log_likelihood << " minsupport " << min_support
+         << " sb =" << top_sb << "," << second_sb << " max_sb " << _max_strand_bias << endl;
 
     if (base_likelihood >= _min_log_likelihood) {
         // update the node calls
@@ -394,16 +396,12 @@ void Caller::compute_top_frequencies(const BasePileup& bp,
     // compute histogram from pileup
     for (auto i : base_offsets) {
         string val = Pileups::extract(bp, i.first);
+
         if ((inserts && val[0] != '+') || (!inserts && val[0] == '+')) {
             // toggle inserts
             continue;
         }
-        if (hist.find(val) == hist.end()) {
-            hist[val] = 0;
-            rev_hist[val] = 0;
-        }
-        ++hist[val];
-
+        
         // val will always be uppcase / forward strand.  we check
         // the original pileup to see if reversed
         bool reverse = bases[i.first] == ',' ||
@@ -414,7 +412,16 @@ void Caller::compute_top_frequencies(const BasePileup& bp,
             int64_t len, to_id, to_offset;
             Pileups::parse_delete(tok, is_reverse, len, from_start, to_id, to_offset, to_end);
             reverse = is_reverse;
+            // reset reverse to forward
+            Pileups::make_delete(val, false, len, from_start, to_id, to_offset, to_end);
         }
+
+        if (hist.find(val) == hist.end()) {
+            hist[val] = 0;
+            rev_hist[val] = 0;
+        }
+        ++hist[val];
+
         if (reverse) {
             ++rev_hist[val];
         }
