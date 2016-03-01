@@ -343,7 +343,8 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
             // add deletion string to bases field
             if (seq_reverse) {
                 seq = reverse_complement(seq);
-            }            
+            }
+            assert(node_offset < node.sequence().length());
             make_delete(seq, aln_reverse, node.id(), node_offset, map_reverse);
             if (_running_del != NULL) {
                 // we are appending onto existing entry
@@ -529,10 +530,15 @@ void Pileups::move_non_canonical_deletes(NodePileup* node_pileup) {
                 bool to_end;
                 bool reverse;
                 parse_delete(val, reverse, len, from_start, to_id, to_offset, to_end);
-                if (make_pair(make_pair((int64_t)node_pileup->node_id(), offset), from_start) >
+                Node* to_node = _graph->get_node(to_id);
+                // deletions that go to nowhere will have offsets run off their
+                // target node ends.  remove them (todo: better detect earlier on?)
+                if (to_offset < 0 || to_offset >= to_node->sequence().length()) {
+                    keep = false;
+                } else if (make_pair(make_pair((int64_t)node_pileup->node_id(), offset), from_start) >
                     make_pair(make_pair((int64_t)to_id, to_offset), !to_end)) {
                     // make canonical version by flipping start and end
-                    Node* to_node = _graph->get_node(to_id);
+                    assert(to_offset <= to_node->sequence().length());
                     NodePileup* tgt_node_pileup = get_create_node_pileup(to_node);
                     BasePileup* tgt_base_pileup = get_create_base_pileup(*tgt_node_pileup, to_offset);
                     string canonical_val;
@@ -541,6 +547,7 @@ void Pileups::move_non_canonical_deletes(NodePileup* node_pileup) {
                     if (!qual.empty()) {
                         tgt_base_pileup->mutable_qualities()->append(qual);
                     }
+                    tgt_base_pileup->set_num_bases(tgt_base_pileup->num_bases() + 1);
                     keep = false;
                 } 
             }
@@ -673,9 +680,8 @@ void Pileups::make_insert(string& seq, bool is_reverse) {
 }
 
 void Pileups::make_delete(string& seq, bool is_reverse, int64_t node_id, int64_t node_offset, bool map_reverse) {
-    int64_t delta = map_reverse ? -seq.length() - 1 : seq.length() + 1;
+    int64_t delta = map_reverse ? -seq.length() : seq.length();
     int64_t dest_offset = node_offset + delta;
-    assert(dest_offset >= 0);
     make_delete(seq, is_reverse, seq.length(), map_reverse, node_id, dest_offset, map_reverse);
 }
 
@@ -708,7 +714,6 @@ void Pileups::append_delete(string& bases, const string& seq) {
     // add together
     string merged_del;
     make_delete(merged_del, old_reverse, (old_len + new_len), old_from_start, new_id, new_offset, new_to_end);
-    
     bases.erase(d_start);
     bases.append(merged_del);
 }
