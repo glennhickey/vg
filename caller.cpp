@@ -377,7 +377,7 @@ void Caller::call_base_pileup(const NodePileup& np, int64_t offset, bool inserti
         swap(base_call.first, base_call.second);
     }
 
-    //cerr << " bp " << pb2json(bp) << " --> " << base_call.first << ", " << base_call.second << endl;
+    cerr << " bp " << pb2json(bp) << " --> " << base_call.first << ", " << base_call.second << endl;
 }
 
 void Caller::compute_top_frequencies(const BasePileup& bp,
@@ -405,7 +405,8 @@ void Caller::compute_top_frequencies(const BasePileup& bp,
         // val will always be uppcase / forward strand.  we check
         // the original pileup to see if reversed
         bool reverse = bases[i.first] == ',' ||
-            (bases[i.first] == '+' && ::islower(bases[i.first + val.length() - 1]));
+            (bases[i.first] == '+' && ::islower(bases[i.first + val.length() - 1])) ||
+            (bases[i.first] != '-' && ::islower(bases[i.first]));
         if (bases[i.first] == '-') {
             string tok = Pileups::extract(bp, i.first);
             bool is_reverse, from_start, to_end;
