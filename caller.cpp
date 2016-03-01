@@ -892,12 +892,15 @@ list<Mapping> NodeDivider::map_node(int64_t node_id, int64_t start_offset, int64
                     assert(out_mappings.empty());
                     mapping.mutable_position()->set_offset(start_offset - i->first);
                 } else {
-                    mapping.mutable_position()->set_offset(i->first + call_node->sequence().length() - 1);
+                    mapping.mutable_position()->set_offset(call_node->sequence().length() - 1);
                 }
                 int map_len = mapping.position().offset() + 1;
                 if (map_len + cur_len > length) {
                     map_len = length - cur_len;
                 }
+                assert(map_len <= call_node->sequence().length());
+                assert(mapping.position().offset() >= 0 &&
+                       mapping.position().offset() < call_node->sequence().length());
                 Edit* edit = mapping.add_edit();
                 edit->set_from_length(map_len);
                 edit->set_to_length(map_len);
