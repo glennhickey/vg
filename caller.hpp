@@ -176,6 +176,8 @@ public:
 
     // map paths from input graph into called graph
     void map_paths();
+    // make sure mapped paths generate same strings as input paths
+    void verify_path(const Path& in_path, const list<Mapping>& call_path);
     
     // call position at given base
     // if insertion flag set to true, call insertion between base and next base
