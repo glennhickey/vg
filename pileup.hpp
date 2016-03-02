@@ -230,8 +230,8 @@ public:
     static void append_delete(string& bases, const string& seq);
         
     static void parse_insert(const string& tok, int64_t& len, string& seq, bool& is_reverse);
-    static void parse_delete(const string& tok, bool& is_reverse, int64_t& len, bool& from_start, int64_t& to_id, int64_t& to_offset,
-                             bool& to_end);
+    static void parse_delete(const string& tok, int64_t offset, int64_t& from_offset, bool& is_reverse, int64_t& len,
+                             bool& from_start, int64_t& to_id, int64_t& to_offset, bool& to_end);
 
     static bool base_equal(char c1, char c2, bool is_reverse);
     

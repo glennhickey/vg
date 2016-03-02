@@ -229,6 +229,7 @@ void Caller::map_paths() {
         list<Mapping>& call_path = _call_graph.paths.create_path(path.name());
         int last_rank = -1;
         int last_call_rank = 0;
+        int running_len = 0; 
         for (int i = 0; i < path.mapping_size(); ++i) {
             const Mapping& mapping = path.mapping(i);
             int rank = mapping.rank() == 0 ? i+1 : mapping.rank();
@@ -253,9 +254,13 @@ void Caller::map_paths() {
             int end = mapping.is_reverse() ? start - len + 1 : start + len - 1;
             list<Mapping> call_mappings = _node_divider.map_node(node_id, start, len, mapping.is_reverse());
             for (auto& cm : call_mappings) {
+                cerr << "Map node " << pb2json(cm.position()) << " -> " << running_len << " = "
+                     << ( running_len + 32314860) << endl;
+                running_len += cm.edit(0).from_length();
                 cm.set_rank(++last_call_rank);
                 call_path.push_back(cm);
             }
+
             last_rank = rank; 
         }
         verify_path(path, call_path);
@@ -431,8 +436,8 @@ void Caller::compute_top_frequencies(const BasePileup& bp,
         if (bases[i.first] == '-') {
             string tok = Pileups::extract(bp, i.first);
             bool is_reverse, from_start, to_end;
-            int64_t len, to_id, to_offset;
-            Pileups::parse_delete(tok, is_reverse, len, from_start, to_id, to_offset, to_end);
+            int64_t len, to_id, to_offset, from_offset;
+            Pileups::parse_delete(tok, 1, from_offset, is_reverse, len, from_start, to_id, to_offset, to_end);
             reverse = is_reverse;
             // reset reverse to forward
             Pileups::make_delete(val, false, len, from_start, to_id, to_offset, to_end);
@@ -662,12 +667,13 @@ void Caller::create_node_calls(const NodePileup& np) {
                         int64_t del_len;
                         bool from_start;
                         int64_t from_id = _node->id();
-                        int from_offset = cur;
+                        int64_t from_offset;
                         int64_t to_id;
                         int64_t to_offset;
                         bool to_end;
                         bool reverse;
-                        Pileups::parse_delete(call1, reverse, del_len, from_start, to_id, to_offset, to_end);
+                        Pileups::parse_delete(call1, cur, from_offset, reverse, del_len, from_start, to_id, to_offset, to_end);
+                        assert(from_offset >=0 && from_offset < _node->sequence().length());
                         NodeOffSide s1(NodeSide(from_id, !from_start), from_offset);
                         NodeOffSide s2(NodeSide(to_id, to_end), to_offset);
                         Node* node2 = _graph->get_node(to_id);
