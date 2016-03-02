@@ -70,13 +70,6 @@ void Caller::write_call_graph(ostream& out, bool json) {
         _call_graph.paths.to_graph(_call_graph.graph);
         out << pb2json(_call_graph.graph);
     } else {
-        cerr << "writing graph with " << _call_graph.paths._paths.size() << endl;
-        for (auto i :  _call_graph.paths._paths) {
-            cerr << " path " << i.first << endl;
-            for (auto j : i.second) {
-                cerr << " " << pb2json(j);
-            }
-        }
         _call_graph.serialize_to_ostream(out);
     }
 }
@@ -89,7 +82,7 @@ void Caller::call_node_pileup(const NodePileup& pileup) {
     
     _node_calls.clear();
     _insert_calls.clear();
-    string def_char = _leave_uncalled ? "." : "-";
+    string def_char = "-";
     _node_calls.assign(_node->sequence().length(), Genotype(def_char, def_char));
     _insert_calls.assign(_node->sequence().length(), Genotype(def_char, def_char));
     _node_likelihoods.clear();
@@ -265,9 +258,37 @@ void Caller::map_paths() {
             }
             last_rank = rank; 
         }
+        verify_path(path, call_path);
     };
     _graph->paths.for_each(lambda);
     
+}
+
+void Caller::verify_path(const Path& in_path, const list<Mapping>& call_path) {
+    function<string(VG*, const Mapping&)> lambda = [](VG* graph, const Mapping& mapping) {
+        const Position& pos = mapping.position();
+        const Node* node = graph->get_node(pos.node_id());
+        string s = node->sequence();
+        if (mapping.is_reverse()) {
+            s = reverse_complement(s);
+        }
+        if (pos.offset() > 0) {
+            s = s.substr(pos.offset());
+        }
+        return s;
+    };
+
+    string in_string;
+    for (int i = 0; i < in_path.mapping_size(); ++i) {
+        in_string += lambda(_graph, in_path.mapping(i));
+    }
+    string call_string;
+    for (auto& m : call_path) {
+        call_string += lambda(&_call_graph, m);
+    }
+
+    assert(in_string == call_string);
+
 }
 
 void Caller::create_augmented_edge(Node* node1, int from_offset, bool left_side1, bool aug1,
