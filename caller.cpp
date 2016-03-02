@@ -629,8 +629,7 @@ void Caller::create_node_calls(const NodePileup& np) {
                 function<void(string&, string&, NodeDivider::EntryCat)>  call_het =
                     [&](string& call1, string& call2, NodeDivider::EntryCat altCat) {
                 
-                    if (call1 == "." || (_leave_uncalled && altCat == NodeDivider::EntryCat::Alt1 &&
-                                         call2 != "." && !(call1 == "-" && call1.length() > 1))) {
+                    if (call1 == "." || (_leave_uncalled && altCat == NodeDivider::EntryCat::Alt1 && call2 != ".")) {
                         // reference base
                         int cn = call1 == "." ? 1 : 0;
                         string new_seq = seq.substr(cur, 1);
@@ -646,7 +645,7 @@ void Caller::create_node_calls(const NodePileup& np) {
                         no2 = NodeOffSide(NodeSide(_node->id(), false), next);
                         _augmented_edges[make_pair(no1, no2)] = 'R';
                     }
-                    else if (call1[0] != '-' && call1[0] != '+' && call1[0] != '-') {
+                    if (call1 != "." && call1[0] != '-' && call1[0] != '+' && call1[0] != '-') {
                         // snp base
                         string new_seq = call1;
                         Node* node = _call_graph.create_node(new_seq, ++_max_id);
@@ -662,7 +661,7 @@ void Caller::create_node_calls(const NodePileup& np) {
                         no2 = NodeOffSide(NodeSide(_node->id(), false), next);
                         _augmented_edges[make_pair(no1, no2)] = 'S';
                     }
-                    else if (call1[0] == '-' && call1.length() > 1) {
+                    else if (call1 != "." && call1[0] == '-' && call1.length() > 1) {
                         // delete
                         int64_t del_len;
                         bool from_start;
