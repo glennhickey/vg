@@ -165,11 +165,6 @@ public:
     // check base quality as well as miss match filter
     bool pass_filter(const Alignment& alignment, int64_t read_offset,
                      const vector<int>& mismatches) const;
-
-    // look at the base pileup for the last base of a read.  if there are too many
-    // inserts hanging off, zap it.  this is to deal with an observed issue with
-    // map's soft clipping logic. 
-    void filter_end_inserts(NodePileup& pileup, int64_t node_offset, const Node& node);
             
     // move all entries in other object into this one.
     // if two positions collide, they are merged.
