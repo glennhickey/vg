@@ -93,8 +93,14 @@ void Caller::call_node_pileup(const NodePileup& pileup) {
     // todo: parallelize this loop
     // process each base in pileup individually
     for (int i = 0; i < pileup.base_pileup_size(); ++i) {
-        if (pileup.base_pileup(i).num_bases() >= _min_depth &&
-            pileup.base_pileup(i).num_bases() <= _max_depth) {
+        int num_inserts = 0;
+        for (auto b : pileup.base_pileup(i).bases()) {
+            if (b == '+') {
+                ++num_inserts;
+            }
+        }
+        int pileup_depth = max(num_inserts, pileup.base_pileup(i).num_bases() - num_inserts);
+        if (pileup_depth >= _min_depth && pileup_depth <= _max_depth) {
             call_base_pileup(pileup, i, false);
             call_base_pileup(pileup, i, true);
         }
@@ -368,7 +374,7 @@ void Caller::call_base_pileup(const NodePileup& np, int64_t offset, bool inserti
     string ref_base = string(1, ::toupper(bp.ref_base()));
 
     // compute threshold
-    int min_support = max(int(_min_frac * (double)total_count), _min_support);
+    int min_support = max(int(_min_frac * (double)max(total_count, bp.num_bases() - total_count)), _min_support);
 
     // compute strand bias
     double top_sb = top_count > 0 ? abs(0.5 - (double)top_rev_count / (double)top_count) : 0;
@@ -739,15 +745,18 @@ void Caller::create_node_calls(const NodePileup& np) {
                     // todo: check reverse?
                     Node* node = _call_graph.create_node(ins_seq, ++_max_id);
                     int cn = ins_call2[0] == '+' ? 2 : 1;
+                    cerr << "Insertion node " << node->id() << ": " << ins_seq << " cn= " << endl;
                     _inserted_nodes.push_back(make_pair(node, cn));
 
                     // bridge to insert
                     NodeOffSide no1(NodeSide(_node->id(), true), next-1);
                     NodeOffSide no2(NodeSide(node->id(), false), 0);
+                    cerr << "Ins Bridge S " << no1 << " -> " << no2 << endl;
                     _augmented_edges[make_pair(no2, no1)] = 'I';
                     // bridge from insert
                     no1 = NodeOffSide(NodeSide(node->id(), true), node->sequence().length() - 1);
                     no2 = NodeOffSide(NodeSide(_node->id(), false), next);
+                    cerr << "Ins Bridge D " << no1 << " -> " << no2 << endl;                    
                     _augmented_edges[make_pair(no2, no1)] = 'I';
                 }
             };
