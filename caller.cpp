@@ -334,9 +334,10 @@ void Caller::create_augmented_edge(Node* node1, int from_offset, bool left_side1
                 if (!_call_graph.has_edge(side1, side2)) {
                     Edge* edge = _call_graph.create_edge(call_sides1[i], call_sides2[j],
                                                          left_side1, !left_side2);
-                    // only do deletion edges for now, worried about case where
-                    // other edges get written twice with different cats making something unstable. 
-                    if (cat == 'L' && _text_calls != NULL) {
+                    // can edges be written more than once with different cats?
+                    // if so, first one will prevail. should check if this
+                    // can impact vcf converter...
+                    if (_text_calls != NULL) {
                         write_edge_tsv(edge, cat);
                     }
                 }
