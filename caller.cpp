@@ -567,6 +567,18 @@ double Caller::genotype_log_likelihood(const BasePileup& bp,
         string base = Pileups::extract(bp, base_offsets[i].first);
         bool base_insert = base[0] == '+';
         if (base_insert == insert) {
+
+            // make sure deletes always compared without is_reverse flag
+            if (base.length() > 1 && base[0] == '-') {
+                bool is_reverse, from_start, to_end;
+                int64_t len, to_id, to_offset, from_offset;
+                Pileups::parse_delete(base, 1, from_offset, is_reverse, len, from_start, to_id, to_offset, to_end);
+                // reset reverse to forward
+                if (is_reverse == true) {
+                    Pileups::make_delete(base, false, len, from_start, to_id, to_offset, to_end);
+                }
+            }
+
             char qual = base_offsets[i].second >= 0 ? quals[base_offsets[i].second] : _default_quality;
             perr = phred2prob(qual);
             if (base == ref_base) {
