@@ -359,14 +359,15 @@ void Caller::call_base_pileup(const NodePileup& np, int64_t offset, bool inserti
     string second_base;
     int second_count;
     int second_rev_count;
+    int total_count;
     compute_top_frequencies(bp, base_offsets, top_base, top_count, top_rev_count,
-                            second_base, second_count, second_rev_count, insertion);
+                            second_base, second_count, second_rev_count, total_count, insertion);
 
     // note first and second base will be upper case too
     string ref_base = string(1, ::toupper(bp.ref_base()));
 
     // compute threshold
-    int min_support = max(int(_min_frac * (double)bp.num_bases()), _min_support);
+    int min_support = max(int(_min_frac * (double)total_count), _min_support);
 
     // compute strand bias
     double top_sb = top_count > 0 ? abs(0.5 - (double)top_rev_count / (double)top_count) : 0;
@@ -410,13 +411,14 @@ void Caller::compute_top_frequencies(const BasePileup& bp,
                                      const vector<pair<int64_t, int64_t> >& base_offsets,
                                      string& top_base, int& top_count, int& top_rev_count,
                                      string& second_base, int& second_count, int& second_rev_count,
-                                     bool inserts) {
+                                     int& total_count, bool inserts) {
 
     // histogram of pileup entries (base, indel)
     unordered_map<string, int> hist;
     // same thing but just reverse strand (used for strand bias filter)
     unordered_map<string, int> rev_hist;
 
+    total_count = 0;
     const string& bases = bp.bases();
 
     // compute histogram from pileup
@@ -427,6 +429,7 @@ void Caller::compute_top_frequencies(const BasePileup& bp,
             // toggle inserts
             continue;
         }
+        ++total_count;
         
         // val will always be uppcase / forward strand.  we check
         // the original pileup to see if reversed

@@ -190,7 +190,7 @@ public:
                                  const vector<pair<int64_t, int64_t> >& base_offsets,
                                  string& top_base, int& top_count, int& top_rev_count,
                                  string& second_base, int& second_count, int& second_rev_count,
-                                 bool inserts);
+                                 int& total_count, bool inserts);
     
     // compute genotype for a position with maximum prob
     double mp_snp_genotype(const BasePileup& bp,
