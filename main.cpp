@@ -854,12 +854,6 @@ int main_pileup(int argc, char** argv) {
         pileups[0].merge(pileups[i]);
     }
 
-    // postprocess deletion edges
-    if (show_progress && pileups.size() > 1) {
-        cerr << "Canonicalizing deletions" << endl;
-    }
-    pileups[0].move_non_canonical_deletes();
-    
     // spit out the pileup
     if (show_progress) {
         cerr << "Writing pileups" << endl;

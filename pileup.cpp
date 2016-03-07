@@ -160,7 +160,11 @@ void Pileups::compute_from_alignment(Alignment& alignment) {
     // keep track of read offset of mapping array element i
     vector<int64_t> in_read_offsets(path.mapping_size());
     vector<int64_t> out_read_offsets(path.mapping_size());
-    _running_del = NULL;
+    // keep track of last mapping, offset of match, and open deletion for
+    // calling deletion endpoints (which are beside, but not on the base offsets they get written to)
+    pair<const Mapping*, int64_t> last_match(NULL, -1);
+    pair<const Mapping*, int64_t> last_del(NULL, -1);
+    pair<const Mapping*, int64_t> open_del(NULL, -1);
     for (int i = 0; i < path.mapping_size(); ++i) {
         const Mapping& mapping = path.mapping(i);
         if (_graph->has_node(mapping.position().node_id())) {
@@ -173,7 +177,7 @@ void Pileups::compute_from_alignment(Alignment& alignment) {
                 // process all pileups in edit.
                 // update the offsets as we go
                 compute_from_edit(*pileup, node_offset, read_offset, *node,
-                                  alignment, mapping, edit, mismatch_counts);
+                                  alignment, mapping, edit, mismatch_counts, last_match, last_del, open_del);
             }
             out_read_offsets[i] = read_offset - 1;
         }
@@ -223,7 +227,10 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
                                 int64_t& read_offset,
                                 const Node& node, const Alignment& alignment,
                                 const Mapping& mapping, const Edit& edit,
-                                const vector<int>& mismatch_counts) {
+                                const vector<int>& mismatch_counts,
+                                pair<const Mapping*, int64_t>& last_match,
+                                pair<const Mapping*, int64_t>& last_del,
+                                pair<const Mapping*, int64_t>& open_del) {
     string seq = edit.sequence();
     // is the mapping reversed wrt read sequence? use for iterating
     bool map_reverse = mapping.is_reverse();
@@ -239,7 +246,6 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
     
     // ***** MATCH *****
     if (edit.from_length() == edit.to_length()) {
-        _running_del = NULL;
         assert (edit.from_length() > 0);
         make_match(seq, edit.from_length(), aln_reverse);
         assert(seq.length() == edit.from_length());            
@@ -270,6 +276,44 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
                 }
                 // pileup size increases by 1
                 base_pileup->set_num_bases(base_pileup->num_bases() + 1);
+
+                // close off any open deletion
+                if (open_del.first != NULL) {
+                    string del_seq;
+                    make_delete(del_seq, seq_reverse, last_match, mapping, node_offset);
+                    int64_t dp_node_id;
+                    int64_t dp_node_offset;
+                    // store in canonical position
+                    if (make_pair(make_pair(last_del.first->position().node_id(), last_del.second),
+                                  last_del.first->is_reverse()) <
+                        make_pair(make_pair(open_del.first->position().node_id(), open_del.second),
+                                  open_del.first->is_reverse())) {
+                        dp_node_id = last_del.first->position().node_id();
+                        dp_node_offset = last_del.second;
+                    } else {
+                        dp_node_id = open_del.first->position().node_id();
+                        dp_node_offset = open_del.second;
+                    }
+                    Node* dp_node = _graph->get_node(dp_node_id);
+                    NodePileup* dp_node_pileup = get_create_node_pileup(dp_node);
+                    BasePileup* dp_base_pileup = get_create_base_pileup(*dp_node_pileup, dp_node_offset);
+                    // reference_base if empty
+                    if (dp_base_pileup->num_bases() == 0) {
+                        dp_base_pileup->set_ref_base(dp_node->sequence()[dp_node_offset]);
+                    } else {
+                        assert(dp_base_pileup->ref_base() == dp_node->sequence()[dp_node_offset]);
+                    }
+                    *dp_base_pileup->mutable_bases() += del_seq;
+                    if (!alignment.quality().empty()) {
+                        // we only use quality of one endpoint here.  should average
+                        *dp_base_pileup->mutable_qualities() += alignment.quality()[read_offset];
+                    }
+                    dp_base_pileup->set_num_bases(dp_base_pileup->num_bases() + 1);
+                    open_del = make_pair((Mapping*)NULL, -1);
+                    last_del = make_pair((Mapping*)NULL, -1);
+                }
+                
+                last_match = make_pair(&mapping, node_offset);
             }
             // move right along read, and left/right depending on strand on reference
             node_offset += delta;
@@ -278,7 +322,6 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
     }
     // ***** INSERT *****
     else if (edit.from_length() < edit.to_length()) {
-        _running_del = NULL;
         if (pass_filter(alignment, read_offset, mismatch_counts)) {
             if (seq_reverse) {
                 seq = reverse_complement(seq);
@@ -326,43 +369,27 @@ void Pileups::compute_from_edit(NodePileup& pileup, int64_t& node_offset,
         if (pass_filter(alignment, read_offset, mismatch_counts)) {
             assert(edit.to_length() == 0);
             assert(edit.sequence().empty());
-            int64_t del_start = !map_reverse ? node_offset - 1:
-                node_offset - edit.from_length();
-            seq = node.sequence().substr(max((int64_t)0, del_start), edit.from_length());
-            // add deletion string to bases field
-            if (seq_reverse) {
-                seq = reverse_complement(seq);
-            }
-            assert(node_offset < node.sequence().length());
-            make_delete(seq, aln_reverse, node.id(), node_offset, map_reverse);
-            if (_running_del != NULL) {
-                // we are appending onto existing entry
-                // deletes are special in that they can span multiple nodes/edits
-                append_delete(*_running_del->mutable_bases(), seq);
-                //cerr << "APPEND: NODE " << node.id() << "o" << node_offset << " delstart " << del_start << "seq " << seq << endl;
-            } else if (del_start >=0) {
-                BasePileup* base_pileup = get_create_base_pileup(pileup, node_offset);
-                _running_del = base_pileup;
-                //cerr << "CREATE: NODE " << node.id() << "o" << node_offset << " delstart " << del_start << "seq " << seq
-                //     << " " << pb2json(mapping) << endl;
 
-                // reference_base if empty
-                if (base_pileup->num_bases() == 0) {
-                    base_pileup->set_ref_base(node.sequence()[node_offset]);
-                } else {
-                    assert(base_pileup->ref_base() == node.sequence()[node_offset]);
-                }
-                base_pileup->mutable_bases()->append(seq);
-                if (!alignment.quality().empty()) {
-                    *base_pileup->mutable_qualities() += alignment.quality()[read_offset];
-                }
-                // pileup size increases by 1
-                base_pileup->set_num_bases(base_pileup->num_bases() + 1);                
+            // deltion will get written in the "Match" section
+            // note: deletions will only get written if there's a match on either side
+            // so deletions at beginning/end of read ignored in pileup
+            if (open_del.first == NULL && last_match.first != NULL) {
+                open_del = make_pair(&mapping, node_offset);
             }
+            // open_del : first base deleted by deleltion
+            // last_del : most recent base deleted by deletion
+            // last_match : most recent base in a match
+            // (most recent is in order we are scanning here)
+
+            // a deletion will be an edge between two matches.
+            // but in the pileup, it will be stored in either open_del or last_del
+            // (which ever has lower coordinate).  
         }
         int64_t delta = map_reverse ? -edit.from_length() : edit.from_length();
         // stay put on read, move left/right depending on strand on reference
         node_offset += delta;
+
+        last_del = make_pair(&mapping, map_reverse ? node_offset + 1 : node_offset - 1);
     }
 }
 
@@ -469,80 +496,6 @@ Pileups& Pileups::merge(Pileups& other) {
     return *this;
 }
 
-void Pileups::move_non_canonical_deletes() {
-    function<void(NodePileup&)> lambda = [this](NodePileup& pileup) {
-        move_non_canonical_deletes(&pileup);
-    };
-    for_each_node_pileup(lambda);
-}
-        
-void Pileups::move_non_canonical_deletes(NodePileup* node_pileup) {    
-    for (int64_t offset = 0; offset < node_pileup->base_pileup_size(); ++offset) {
-        BasePileup* base_pileup = get_base_pileup(*node_pileup, offset);
-        // should we try speeding this up?
-        vector<pair<int64_t, int64_t> > bp_offsets;
-        string new_bases;
-        string new_qualities;
-        int new_num_bases = 0;
-        parse_base_offsets(*base_pileup, bp_offsets);
-        for (int i = 0; i < bp_offsets.size(); ++i) {
-            int bpo = bp_offsets[i].first;
-            int qo = bp_offsets[i].second;
-            int val_len = i < bp_offsets.size() - 1 ? bp_offsets[i+1].first - bpo :
-                base_pileup->bases().length() - bpo;
-            string val = base_pileup->bases().substr(bpo, val_len);
-            bool keep = true;
-            if (val[0] == '-') {
-                string qual;
-                if (base_pileup->qualities().length() > 0) {
-                    qual = base_pileup->qualities().substr(qo, 1);
-                }
-                int64_t len;
-                bool from_start;
-                int64_t from_offset;
-                int64_t to_id;
-                int64_t to_offset;
-                bool to_end;
-                bool reverse;
-                parse_delete(val, offset, from_offset, reverse, len, from_start, to_id, to_offset, to_end);
-                Node* to_node = _graph->get_node(to_id);
-                // deletions that go to nowhere will have offsets run off their
-                // target node ends.  remove them (todo: better detect earlier on?)
-                if (to_offset < 0 || to_offset >= to_node->sequence().length()) {
-                    keep = false;
-                } else if (make_pair(make_pair((int64_t)node_pileup->node_id(), offset), from_start) >
-                    make_pair(make_pair((int64_t)to_id, to_offset), !to_end)) {
-                    // make canonical version by flipping start and end
-                    assert(to_offset <= to_node->sequence().length());
-                    NodePileup* tgt_node_pileup = get_create_node_pileup(to_node);
-                    BasePileup* tgt_base_pileup = get_create_base_pileup(*tgt_node_pileup, to_offset);
-                    string canonical_val;
-                    make_delete(canonical_val, reverse, len, !to_end, node_pileup->node_id(), offset, !from_start);
-                    tgt_base_pileup->mutable_bases()->append(canonical_val);
-                    if (!qual.empty()) {
-                        tgt_base_pileup->mutable_qualities()->append(qual);
-                    }
-                    tgt_base_pileup->set_num_bases(tgt_base_pileup->num_bases() + 1);
-                    keep = false;
-                } 
-            }
-            if (keep == true) {
-                // preserve 
-                new_bases += val;
-                if (base_pileup->qualities().length() > 0) {
-                    new_qualities += base_pileup->qualities()[qo];
-                }
-                ++new_num_bases;
-            }
-        }
-        if (new_num_bases < base_pileup->num_bases()) {
-            *base_pileup->mutable_bases() = new_bases;
-            *base_pileup->mutable_qualities() = new_qualities;
-            base_pileup->set_num_bases(new_num_bases);
-        }
-    }
-}
-
 BasePileup& Pileups::merge_base_pileups(BasePileup& p1, BasePileup& p2) {
     assert(p1.num_bases() == 0 || p2.num_bases() == 0 ||
            p1.ref_base() == p2.ref_base());
@@ -610,8 +563,8 @@ void Pileups::parse_base_offsets(const BasePileup& bp,
         } else if (bases[base_offset] == '-') {
             offsets.push_back(make_pair(base_offset, i < quals.length() ? i : -1));
             int64_t lf = base_offset + 1;
-            // eat up five semicolons
-            for (int64_t sc_count = 0; sc_count < 5; ++lf) {
+            // eat up six semicolons
+            for (int64_t sc_count = 0; sc_count < 6; ++lf) {
                 if (bases[lf] == ';') {
                     ++sc_count;
                 }
@@ -654,43 +607,36 @@ void Pileups::make_insert(string& seq, bool is_reverse) {
     seq = ss.str();
 }
 
-void Pileups::make_delete(string& seq, bool is_reverse, int64_t node_id, int64_t node_offset, bool map_reverse) {
-    int64_t delta = map_reverse ? -seq.length() : seq.length();
-    int64_t dest_offset = node_offset + delta;
-    make_delete(seq, is_reverse, seq.length(), map_reverse, node_id, dest_offset, map_reverse);
+void Pileups::make_delete(string& seq, bool is_reverse, const pair<const Mapping*, int64_t>& last_match,
+                          const Mapping& mapping, int64_t node_offset){
+    int64_t from_id = last_match.first->position().node_id();
+    int64_t from_offset = last_match.second;
+    bool from_start = last_match.first->is_reverse();
+    int64_t to_id = mapping.position().node_id();
+    int64_t to_offset = node_offset;
+    bool to_end = mapping.is_reverse();
+
+    // canonical order
+    if (make_pair(make_pair(from_id, from_offset), from_start) >
+        make_pair(make_pair(to_id, to_offset), to_end)) {
+        swap(from_id, to_id);
+        swap(from_offset, to_offset);
+        swap(from_start, to_end);
+        from_start = !from_start;
+        to_end = !to_end;
+    }
+    
+    make_delete(seq, is_reverse, from_id, from_offset, from_start, to_id, to_offset, to_end);
 }
 
-void Pileups::make_delete(string& seq, bool is_reverse, int64_t len, bool from_start, int64_t to_id,
-                          int64_t to_offset, bool to_end) {
-    // format : -length;from_start;dest_id;dest_offset;to_end
+void Pileups::make_delete(string& seq, bool is_reverse,
+                          int64_t from_id, int64_t from_offset, bool from_start,
+                          int64_t to_id, int64_t to_offset, bool to_end) {
+    // format : -is_reverse;from_id;from_offset;from_start;to_id;do_offset;to_end
     stringstream ss;
-    ss << "-" << len << ";" << is_reverse << ";" << from_start << ";" << to_id << ";" << to_offset << ";" << to_end;
+    ss << "-" << is_reverse << ";" << from_id << ";" << from_offset << ";" << from_start << ";"
+       << to_id << ";" << to_offset << ";" << to_end;
     seq = ss.str();
-}
-
-void Pileups::append_delete(string& bases, const string& seq) {
-    // this could be streamlined a bit to avoid reparsing
-    int64_t d_start = bases.rfind('-');
-    assert(d_start >= 0);
-    // get existing delete at end of bases
-    int64_t old_len, old_offset, old_id;
-    int64_t from_offset;
-    bool old_from_start, old_to_end;
-    bool old_reverse;
-    parse_delete(bases.substr(d_start), 1, from_offset, old_reverse, old_len, old_from_start, old_id, old_offset, old_to_end);
-
-    // parse new delete
-    int64_t new_len, new_offset, new_id;
-    bool new_from_start, new_to_end;
-    bool new_reverse;
-    parse_delete(seq, 1, from_offset, new_reverse, new_len, new_from_start, new_id, new_offset, new_to_end);
-    assert(old_reverse == new_reverse); // no excuse not to be equal
-
-    // add together
-    string merged_del;
-    make_delete(merged_del, old_reverse, (old_len + new_len), old_from_start, new_id, new_offset, new_to_end);
-    bases.erase(d_start);
-    bases.append(merged_del);
 }
         
 void Pileups::parse_insert(const string& tok, int64_t& len, string& seq, bool& is_reverse) {
@@ -704,25 +650,22 @@ void Pileups::parse_insert(const string& tok, int64_t& len, string& seq, bool& i
     is_reverse = ::islower(seq[0]);
 }
 
-void Pileups::parse_delete(const string& tok, int64_t offset, int64_t& from_offset, bool& is_reverse, int64_t& len,
-                           bool& from_start, int64_t& to_id, int64_t& to_offset, bool& to_end) {
+void Pileups::parse_delete(const string& tok, bool& is_reverse,
+                           int64_t& from_id, int64_t& from_offset, bool& from_start,
+                           int64_t& to_id, int64_t& to_offset, bool& to_end) {
     assert(tok[0] == '-');
     vector<string> toks;
     split_delims(tok, ";", toks);
-    assert(toks.size() == 6);
-    len = -atoi(toks[0].c_str());
-    is_reverse = toks[1] != "0";
-    from_start = toks[2] != "0";
-    to_id = atoi(toks[3].c_str());
-    to_offset = atoi(toks[4].c_str());
-    to_end = toks[5] != "0";
-    // deletion actually starts at neghbouring offset
-    if (from_start == false) {
-        assert(offset > 0);
-        from_offset = offset - 1;
-    } else {
-        from_offset = offset + 1;
-    }
+    assert(toks.size() == 7);
+    is_reverse = std::stoi(toks[0]) != 0;
+
+    from_id = std::stoi(toks[1]);
+    from_offset = std::stoi(toks[2]);
+    from_start = std::stoi(toks[3]) != 0;
+    
+    to_id = std::stoi(toks[4]);
+    to_offset = std::stoi(toks[5]);
+    to_end = std::stoi(toks[6]) != 0;
 }
     
 bool Pileups::base_equal(char c1, char c2, bool is_reverse) {
@@ -770,7 +713,7 @@ string Pileups::extract(const BasePileup& bp, int64_t offset) {
         // todo : consolidate deletion parsing code better than this
         int64_t sc = 0;
         int64_t i = offset;
-        for (; sc < 5; ++i) {
+        for (; sc < 6; ++i) {
             if (bases[i] == ';') {
                 ++sc;
             }

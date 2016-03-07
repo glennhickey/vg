@@ -227,6 +227,7 @@ void Caller::update_call_graph() {
     //_call_graph.compact_ids();
 }
 
+
 void Caller::map_paths() {
     // if we don't leave uncalled nodes (ie make augmented graph),
     // then the paths may get disconnected, which we don't support for now
@@ -235,7 +236,8 @@ void Caller::map_paths() {
         list<Mapping>& call_path = _call_graph.paths.create_path(path.name());
         int last_rank = -1;
         int last_call_rank = 0;
-        int running_len = 0; 
+        int running_len = 0;
+        int path_len = 0;
         for (int i = 0; i < path.mapping_size(); ++i) {
             const Mapping& mapping = path.mapping(i);
             int rank = mapping.rank() == 0 ? i+1 : mapping.rank();
@@ -266,9 +268,11 @@ void Caller::map_paths() {
                 cm.set_rank(++last_call_rank);
                 call_path.push_back(cm);
             }
-
+            path_len += len;
             last_rank = rank; 
         }
+        cerr << "running_len " << running_len << " path+len " << path_len << endl;
+        assert(running_len == path_len);
         verify_path(path, call_path);
     };
     _graph->paths.for_each(lambda);
@@ -280,10 +284,12 @@ void Caller::verify_path(const Path& in_path, const list<Mapping>& call_path) {
         const Position& pos = mapping.position();
         const Node* node = graph->get_node(pos.node_id());
         string s = node->sequence();
+        int64_t offset = pos.offset();
         if (mapping.is_reverse()) {
             s = reverse_complement(s);
+            offset = node->sequence().length() -1 - offset;
         }
-        if (pos.offset() > 0) {
+        if (offset > 0) {
             s = s.substr(pos.offset());
         }
         return s;
@@ -298,6 +304,14 @@ void Caller::verify_path(const Path& in_path, const list<Mapping>& call_path) {
         call_string += lambda(&_call_graph, m);
     }
 
+    cerr << "in string " << in_string.length() << " call_string " << call_string.length() << endl;
+    if (in_string.length() == call_string.length()) {
+        for (int i = 0; i < in_string.length(); ++i) {
+            if (in_string[i] != call_string[i]) {
+                cerr << i << " " << in_string[i] << " " << call_string[i] << endl;
+            }
+        }
+    }
     assert(in_string == call_string);
 
 }
@@ -446,11 +460,13 @@ void Caller::compute_top_frequencies(const BasePileup& bp,
         if (bases[i.first] == '-') {
             string tok = Pileups::extract(bp, i.first);
             bool is_reverse, from_start, to_end;
-            int64_t len, to_id, to_offset, from_offset;
-            Pileups::parse_delete(tok, 1, from_offset, is_reverse, len, from_start, to_id, to_offset, to_end);
+            int64_t from_id, from_offset, to_id, to_offset;
+            Pileups::parse_delete(tok, is_reverse, from_id, from_offset, from_start, to_id, to_offset, to_end);
             reverse = is_reverse;
             // reset reverse to forward
-            Pileups::make_delete(val, false, len, from_start, to_id, to_offset, to_end);
+            if (is_reverse) {
+                Pileups::make_delete(val, false, from_id, from_offset, from_start, to_id, to_offset, to_end);
+            }
         }
 
         if (hist.find(val) == hist.end()) {
@@ -577,11 +593,11 @@ double Caller::genotype_log_likelihood(const BasePileup& bp,
             // make sure deletes always compared without is_reverse flag
             if (base.length() > 1 && base[0] == '-') {
                 bool is_reverse, from_start, to_end;
-                int64_t len, to_id, to_offset, from_offset;
-                Pileups::parse_delete(base, 1, from_offset, is_reverse, len, from_start, to_id, to_offset, to_end);
+                int64_t from_id, from_offset, to_id, to_offset;
+                Pileups::parse_delete(base, is_reverse, from_id, from_offset, from_start, to_id, to_offset, to_end);
                 // reset reverse to forward
-                if (is_reverse == true) {
-                    Pileups::make_delete(base, false, len, from_start, to_id, to_offset, to_end);
+                if (is_reverse) {
+                    Pileups::make_delete(base, false, from_id, from_offset, from_start, to_id, to_offset, to_end);
                 }
             }
 
@@ -687,28 +703,31 @@ void Caller::create_node_calls(const NodePileup& np) {
                         // delete
                         int64_t del_len;
                         bool from_start;
-                        int64_t from_id = _node->id();
+                        int64_t from_id;
                         int64_t from_offset;
                         int64_t to_id;
                         int64_t to_offset;
                         bool to_end;
                         bool reverse;
-                        Pileups::parse_delete(call1, cur, from_offset, reverse, del_len, from_start, to_id, to_offset, to_end);
-                        assert(from_offset >=0 && from_offset < _node->sequence().length());
+                        Pileups::parse_delete(call1, reverse, from_id, from_offset, from_start, to_id, to_offset, to_end);
                         NodeOffSide s1(NodeSide(from_id, !from_start), from_offset);
                         NodeOffSide s2(NodeSide(to_id, to_end), to_offset);
+                        Node* node1 = _graph->get_node(from_id);
+                        assert(from_offset >=0 && from_offset < node1->sequence().length());
                         Node* node2 = _graph->get_node(to_id);
+                        assert(to_offset >=0 && to_offset < node2->sequence().length());
+                        
                         // we're just going to update the divider here, since all
                         // edges get done at the end
-                        cerr << "deletion break from " << _node->id() << " " << from_offset << " " << from_start << endl;
-                        //_node_divider.break_end(_node, _graph, from_offset, from_start);
+                        cerr << "deletion break from " << node1->id() << " " << from_offset << " " << from_start << endl;
+                        //_node_divider.break_end(node1, _graph, from_offset, from_start);
                         cerr << "deletion break to " << node2->id() << " " << to_offset << " " << !to_end << endl;
                         //_node_divider.break_end(node2, _graph, to_offset, !to_end);
                         cerr << "delete " << s1 << " -> " << s2 << endl;
                         _augmented_edges[make_pair(s1, s2)] = 'L';
                         // also need to bridge any fragments created above
                         if ((from_start && from_offset > 0) ||
-                            (!from_start && from_offset < _node->sequence().length() - 1)) {
+                            (!from_start && from_offset < node1->sequence().length() - 1)) {
                             NodeOffSide no1(NodeSide(from_id, !from_start), from_offset);
                             NodeOffSide no2(NodeSide(from_id, from_start),
                                             (from_start ? from_offset - 1 : from_offset + 1));

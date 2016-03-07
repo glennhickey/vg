@@ -87,9 +87,6 @@ public:
     NodePileupHash _node_pileups;
     EdgePileupHash _edge_pileups;
 
-    // keep track of running deletion
-    BasePileup* _running_del;
-
     // Ignore bases with quality less than this
     int _min_quality;
     // max mismatches within window_size
@@ -154,7 +151,10 @@ public:
     void compute_from_edit(NodePileup& pileup, int64_t& node_offset, int64_t& read_offset,
                            const Node& node, const Alignment& alignment,
                            const Mapping& mapping, const Edit& edit,
-                           const vector<int>& mismatch_counts);
+                           const vector<int>& mismatch_counts,
+                           pair<const Mapping*, int64_t>& last_match,
+                           pair<const Mapping*, int64_t>& last_del,
+                           pair<const Mapping*, int64_t>& open_del);
 
     // do one pass to count all mismatches in read, so we can do
     // mismatch filter efficiently in 2nd path.
@@ -170,14 +170,6 @@ public:
     // if two positions collide, they are merged.
     // other will be left empty. this is returned
     Pileups& merge(Pileups& other);
-
-    // deletions are stored as edges.  equivalent deletions can wind
-    // up in two different pileups, depending on their representation
-    // (A <-> B vs B <-> A).  Unfortunately, this requires a global
-    // pass to insure that all deletions are expressed in a "canonical"
-    // form (in this case, this means the lowest/leftmost node/offset)
-    void move_non_canonical_deletes();
-    void move_non_canonical_deletes(NodePileup* node_pileup);
 
     // merge p2 into p1 and return 1. p2 is left an empty husk
     static BasePileup& merge_base_pileups(BasePileup& p1, BasePileup& p2);
@@ -218,15 +210,17 @@ public:
     // make the sam pileup style token
     static void make_match(string& seq, int64_t from_length, bool is_reverse);
     static void make_insert(string& seq, bool is_reverse);
-    static void make_delete(string& seq, bool is_reverse, int64_t node_id, int64_t node_offset, bool map_reverse);
-    static void make_delete(string& seq, bool is_reverse, int64_t len, bool from_start, int64_t to_id, int64_t to_offset,
-                            bool to_end);
-
-    static void append_delete(string& bases, const string& seq);
+    static void make_delete(string& seq, bool is_reverse,
+                            const pair<const Mapping*, int64_t>& last_match,
+                            const Mapping& mapping, int64_t node_offset);
+    static void make_delete(string& seq, bool is_reverse,
+                            int64_t from_id, int64_t from_offset, bool from_start,
+                            int64_t to_id, int64_t to_offset, bool to_end);
         
     static void parse_insert(const string& tok, int64_t& len, string& seq, bool& is_reverse);
-    static void parse_delete(const string& tok, int64_t offset, int64_t& from_offset, bool& is_reverse, int64_t& len,
-                             bool& from_start, int64_t& to_id, int64_t& to_offset, bool& to_end);
+    static void parse_delete(const string& tok, bool& is_reverse,
+                             int64_t& from_id, int64_t& from_offset, bool& from_start,
+                             int64_t& to_id, int64_t& to_offset, bool& to_end);
 
     static bool base_equal(char c1, char c2, bool is_reverse);
     
