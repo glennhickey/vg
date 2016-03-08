@@ -151,7 +151,7 @@ void Caller::update_call_graph() {
         // find up to two nodes matching side1 in the call graph
         int from_offset = !sides.first.is_end ? 0 : side1->sequence().length() - 1;
         int to_offset = sides.second.is_end ? side2->sequence().length() - 1 : 0;
-        cerr << "(orig) ";
+        //cerr << "(orig) ";
         char cat = called ? 'R' : 'U';
         create_augmented_edge(side1, from_offset, !sides.first.is_end, true,
                               side2, to_offset, !sides.second.is_end, true, cat);
@@ -191,7 +191,7 @@ void Caller::update_call_graph() {
             bool left2 = !os2.first.is_end;
             // todo: clean this up
             if (!pass1) {
-                cerr << "(pass2) i=" << sides.first << ", " << sides.second << "  ";
+                //cerr << "(pass2) i=" << sides.first << ", " << sides.second << "  ";
                 create_augmented_edge(node1, from_offset, left1, aug1,  node2, to_offset, left2, aug2, cat);
             } else {
                 _node_divider.break_end(node1, &_call_graph, from_offset, left1);
@@ -203,9 +203,9 @@ void Caller::update_call_graph() {
     // two passes here is a hack to make sure break_end is called on all edge ends
     // before processing any of them. 
     process_augmented_edges(true);
-    cerr << "PASS   2" << endl;
+    //cerr << "PASS   2" << endl;
     process_augmented_edges(false);
-    cerr << "PASS 3 " << endl;
+    //cerr << "PASS 3 " << endl;
     _graph->for_each_edge(map_edge);
 
     // write out all the nodes in the divider structure to tsv
@@ -262,8 +262,8 @@ void Caller::map_paths() {
             int end = mapping.is_reverse() ? start - len + 1 : start + len - 1;
             list<Mapping> call_mappings = _node_divider.map_node(node_id, start, len, mapping.is_reverse());
             for (auto& cm : call_mappings) {
-                cerr << "Map node " << pb2json(cm.position()) << " -> " << running_len << " = "
-                     << ( running_len + 32314860) << endl;
+                //cerr << "Map node " << pb2json(cm.position()) << " -> " << running_len << " = "
+                //     << ( running_len + 32314860) << endl;
                 running_len += cm.edit(0).from_length();
                 cm.set_rank(++last_call_rank);
                 call_path.push_back(cm);
@@ -271,7 +271,7 @@ void Caller::map_paths() {
             path_len += len;
             last_rank = rank; 
         }
-        cerr << "running_len " << running_len << " path+len " << path_len << endl;
+        //cerr << "running_len " << running_len << " path+len " << path_len << endl;
         assert(running_len == path_len);
         verify_path(path, call_path);
     };
@@ -303,7 +303,7 @@ void Caller::verify_path(const Path& in_path, const list<Mapping>& call_path) {
     for (auto& m : call_path) {
         call_string += lambda(&_call_graph, m);
     }
-
+/*
     cerr << "in string " << in_string.length() << " call_string " << call_string.length() << endl;
     if (in_string.length() == call_string.length()) {
         for (int i = 0; i < in_string.length(); ++i) {
@@ -312,6 +312,7 @@ void Caller::verify_path(const Path& in_path, const list<Mapping>& call_path) {
             }
         }
     }
+*/
     assert(in_string == call_string);
 
 }
@@ -333,7 +334,7 @@ void Caller::create_augmented_edge(Node* node1, int from_offset, bool left_side1
     } else {
         call_sides2 = NodeDivider::Entry(node2);
     }
-    
+    /*
     cerr << "Input Edge " << node1->id() << ":" << from_offset << ",l=" << left_side1 << ",a=" << aug1
          << " - " << node2->id() << ":" <<to_offset << ",l=" << left_side2 <<" ,a=" << aug2 << endl;
     cerr << " -> ["
@@ -344,7 +345,7 @@ void Caller::create_augmented_edge(Node* node1, int from_offset, bool left_side1
          << (call_sides2.alt1 ? call_sides2.alt1->id() : -1) << ", "
          << (call_sides2.alt2 ? call_sides2.alt2->id() : -1) << "]" << endl;
     cerr << "NM 1 " << _node_divider.index[1] << endl;
-
+    */
     // make up to 9 edges connecting them in the call graph
     for (int i = 0; i < (int)NodeDivider::EntryCat::Last; ++i) {
         for (int j = 0; j < (int)NodeDivider::EntryCat::Last; ++j) {
@@ -400,9 +401,9 @@ void Caller::call_base_pileup(const NodePileup& np, int64_t offset, bool inserti
     double& base_likelihood = insertion ? _insert_likelihoods[offset] : _node_likelihoods[offset];
     base_likelihood = mp_snp_genotype(bp, base_offsets, top_base, second_base, g);
     Genotype& base_call = insertion ? _insert_calls[offset] : _node_calls[offset];
-    cerr << " g= " << g.first << ", " << g.second <<  "(" << top_count << "," << second_count <<") l="
-         << base_likelihood << " min=" <<_min_log_likelihood << " minsupport " << min_support
-         << " sb =" << top_sb << "," << second_sb << " max_sb " << _max_strand_bias << endl;
+//    cerr << " g= " << g.first << ", " << g.second <<  "(" << top_count << "," << second_count <<") l="
+//         << base_likelihood << " min=" <<_min_log_likelihood << " minsupport " << min_support
+//         << " sb =" << top_sb << "," << second_sb << " max_sb " << _max_strand_bias << endl;
 
     if (base_likelihood >= _min_log_likelihood) {
         // update the node calls
@@ -425,7 +426,7 @@ void Caller::call_base_pileup(const NodePileup& np, int64_t offset, bool inserti
         swap(base_call.first, base_call.second);
     }
 
-    cerr << " bp " << pb2json(bp) << " --> " << base_call.first << ", " << base_call.second << endl;
+//    cerr << " bp " << pb2json(bp) << " --> " << base_call.first << ", " << base_call.second << endl;
 }
 
 void Caller::compute_top_frequencies(const BasePileup& bp,
@@ -634,19 +635,19 @@ void Caller::create_node_calls(const NodePileup& np) {
     for (int next = 1; next <= n; ++next) {
         int next_cat = next == n ? -1 : call_cat(_node_calls[next]);
 
-        cerr << _node->id() << "." << cur << " " << _node_calls[cur].first << "," <<_node_calls[cur].second  << endl;
+//        cerr << _node->id() << "." << cur << " " << _node_calls[cur].first << "," <<_node_calls[cur].second  << endl;
 
         // for anything but case where we merge consec. ref/refs
         if (cat == 2 || cat != next_cat ||
             _insert_calls[next-1].first[0] == '+' || _insert_calls[next-1].second[0] == '+') {
 
             if (cat == 0 && !_leave_uncalled) {
-                cerr << "Missing" << endl;
+//                cerr << "Missing" << endl;
             }        
             else if (cat == 1 || (cat == 0 && _leave_uncalled)) {
                 // add reference
                 int cn = cat == 1 ? 2 : 0;
-                cerr << "Ref/Ref" << endl;
+//                cerr << "Ref/Ref" << endl;
                 string new_seq = seq.substr(cur, next - cur);
                 Node* node = _call_graph.create_node(new_seq, ++_max_id);
                 _node_divider.add_fragment(_node, cur, node, NodeDivider::EntryCat::Ref, (char)cn);
@@ -673,7 +674,7 @@ void Caller::create_node_calls(const NodePileup& np) {
                         string new_seq = seq.substr(cur, 1);
                         Node* node = _call_graph.create_node(new_seq, ++_max_id);
                         _node_divider.add_fragment(_node, cur, node, NodeDivider::EntryCat::Ref, (char)cn);
-                        cerr << "REF NODE " << pb2json(*node) << endl;
+//                        cerr << "REF NODE " << pb2json(*node) << endl;
                         // bridge to node
                         NodeOffSide no1(NodeSide(_node->id(), true), cur-1);
                         NodeOffSide no2(NodeSide(node->id(), false), cur);
@@ -688,7 +689,7 @@ void Caller::create_node_calls(const NodePileup& np) {
                         string new_seq = call1;
                         Node* node = _call_graph.create_node(new_seq, ++_max_id);
                         _node_divider.add_fragment(_node, cur, node, altCat, (char)1);
-                        cerr << "SNP NODE (" << call1 << ") " << pb2json(*node) << endl;
+//                        cerr << "SNP NODE (" << call1 << ") " << pb2json(*node) << endl;
 
                         // bridge to node
                         NodeOffSide no1(NodeSide(_node->id(), true), cur-1);
@@ -719,11 +720,11 @@ void Caller::create_node_calls(const NodePileup& np) {
                         
                         // we're just going to update the divider here, since all
                         // edges get done at the end
-                        cerr << "deletion break from " << node1->id() << " " << from_offset << " " << from_start << endl;
+//                        cerr << "deletion break from " << node1->id() << " " << from_offset << " " << from_start << endl;
                         //_node_divider.break_end(node1, _graph, from_offset, from_start);
-                        cerr << "deletion break to " << node2->id() << " " << to_offset << " " << !to_end << endl;
+//                        cerr << "deletion break to " << node2->id() << " " << to_offset << " " << !to_end << endl;
                         //_node_divider.break_end(node2, _graph, to_offset, !to_end);
-                        cerr << "delete " << s1 << " -> " << s2 << endl;
+//                        cerr << "delete " << s1 << " -> " << s2 << endl;
                         _augmented_edges[make_pair(s1, s2)] = 'L';
                         // also need to bridge any fragments created above
                         if ((from_start && from_offset > 0) ||
@@ -731,7 +732,7 @@ void Caller::create_node_calls(const NodePileup& np) {
                             NodeOffSide no1(NodeSide(from_id, !from_start), from_offset);
                             NodeOffSide no2(NodeSide(from_id, from_start),
                                             (from_start ? from_offset - 1 : from_offset + 1));
-                            cerr << "Bridge S " << no1 << " -> " << no2 << endl;
+//                            cerr << "Bridge S " << no1 << " -> " << no2 << endl;
                             if (_augmented_edges.find(make_pair(no1, no2)) == _augmented_edges.end()) {
                                 _augmented_edges[make_pair(no1, no2)] = 'R';
                             }
@@ -740,7 +741,7 @@ void Caller::create_node_calls(const NodePileup& np) {
                             (to_end && to_offset < node2->sequence().length() - 1)) {
                             NodeOffSide no1(NodeSide(to_id, to_end), to_offset);
                             NodeOffSide no2(NodeSide(to_id, !to_end), !to_end ? to_offset - 1 : to_offset + 1);
-                            cerr << "Bridge D " << no1 << " -> " << no2 << endl;
+                            //cerr << "Bridge D " << no1 << " -> " << no2 << endl;
                             if (_augmented_edges.find(make_pair(no1, no2)) == _augmented_edges.end()) {
                                 _augmented_edges[make_pair(no1, no2)] = 'R';
                             }
@@ -764,18 +765,18 @@ void Caller::create_node_calls(const NodePileup& np) {
                     // todo: check reverse?
                     Node* node = _call_graph.create_node(ins_seq, ++_max_id);
                     int cn = ins_call2[0] == '+' ? 2 : 1;
-                    cerr << "Insertion node " << node->id() << ": " << ins_seq << " cn= " << endl;
+                    //cerr << "Insertion node " << node->id() << ": " << ins_seq << " cn= " << endl;
                     _inserted_nodes.push_back(make_pair(node, cn));
 
                     // bridge to insert
                     NodeOffSide no1(NodeSide(_node->id(), true), next-1);
                     NodeOffSide no2(NodeSide(node->id(), false), 0);
-                    cerr << "Ins Bridge S " << no1 << " -> " << no2 << endl;
+                    //cerr << "Ins Bridge S " << no1 << " -> " << no2 << endl;
                     _augmented_edges[make_pair(no2, no1)] = 'I';
                     // bridge from insert
                     no1 = NodeOffSide(NodeSide(node->id(), true), node->sequence().length() - 1);
                     no2 = NodeOffSide(NodeSide(_node->id(), false), next);
-                    cerr << "Ins Bridge D " << no1 << " -> " << no2 << endl;                    
+                    //cerr << "Ins Bridge D " << no1 << " -> " << no2 << endl;                    
                     _augmented_edges[make_pair(no2, no1)] = 'I';
                 }
             };
@@ -857,13 +858,13 @@ void NodeDivider::add_fragment(const Node* orig_node, int offset, Node* fragment
 NodeDivider::Entry NodeDivider::break_end(const Node* orig_node, VG* graph, int offset, bool left_side) {
     NodeHash::iterator i = index.find(orig_node->id());
     if (i == index.end()) {
-        cerr << " Index Not Found " << orig_node->id() << " in table of size " << index.size() << endl;
+        //cerr << " Index Not Found " << orig_node->id() << " in table of size " << index.size() << endl;
         return Entry();
     }
     NodeMap& node_map = i->second;
     NodeMap::iterator j = node_map.upper_bound(offset);
     if (j == node_map.begin()) {
-        cerr << " Offset not found " << offset << " in map of size " << node_map.size() << endl;
+        //cerr << " Offset not found " << offset << " in map of size " << node_map.size() << endl;
         return Entry();
     }
 
@@ -912,8 +913,8 @@ NodeDivider::Entry NodeDivider::break_end(const Node* orig_node, VG* graph, int 
     Entry ret = left_side ? Entry(new_node_ref, cn_ref, new_node_alt1, cn_alt1, new_node_alt2, cn_alt2) :
         Entry(fragment_ref, cn_ref, fragment_alt1, cn_alt1, fragment_alt2, cn_alt2);
 
-    cerr << "Break End " << orig_node->id() << " " << offset << " " << left_side
-         << " --> " << ret << endl;
+    //cerr << "Break End " << orig_node->id() << " " << offset << " " << left_side
+    //     << " --> " << ret << endl;
 
     return ret;
 }
