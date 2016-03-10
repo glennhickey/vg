@@ -653,10 +653,10 @@ void Caller::create_node_calls(const NodePileup& np) {
                 _node_divider.add_fragment(_node, cur, node, NodeDivider::EntryCat::Ref, (char)cn);
                 // bridge to node
                 NodeOffSide no1(NodeSide(_node->id(), true), cur-1);
-                NodeOffSide no2(NodeSide(node->id(), false), cur);
+                NodeOffSide no2(NodeSide(_node->id(), false), cur);
                 _augmented_edges[make_pair(no1, no2)] = 'R';
                 // bridge from node
-                no1 = NodeOffSide(NodeSide(node->id(), true), next-1);
+                no1 = NodeOffSide(NodeSide(_node->id(), true), next-1);
                 no2 = NodeOffSide(NodeSide(_node->id(), false), next);
                 _augmented_edges[make_pair(no1, no2)] = 'R';
             }
@@ -677,10 +677,10 @@ void Caller::create_node_calls(const NodePileup& np) {
 //                        cerr << "REF NODE " << pb2json(*node) << endl;
                         // bridge to node
                         NodeOffSide no1(NodeSide(_node->id(), true), cur-1);
-                        NodeOffSide no2(NodeSide(node->id(), false), cur);
+                        NodeOffSide no2(NodeSide(_node->id(), false), cur);
                         _augmented_edges[make_pair(no1, no2)] = 'R';
                         // bridge from node
-                        no1 = NodeOffSide(NodeSide(node->id(), true), next-1);
+                        no1 = NodeOffSide(NodeSide(_node->id(), true), next-1);
                         no2 = NodeOffSide(NodeSide(_node->id(), false), next);
                         _augmented_edges[make_pair(no1, no2)] = 'R';
                     }
@@ -693,10 +693,10 @@ void Caller::create_node_calls(const NodePileup& np) {
 
                         // bridge to node
                         NodeOffSide no1(NodeSide(_node->id(), true), cur-1);
-                        NodeOffSide no2(NodeSide(node->id(), false), cur);
+                        NodeOffSide no2(NodeSide(_node->id(), false), cur);
                         _augmented_edges[make_pair(no1, no2)] = 'S';
                         // bridge from node
-                        no1 = NodeOffSide(NodeSide(node->id(), true), next-1);
+                        no1 = NodeOffSide(NodeSide(_node->id(), true), next-1);
                         no2 = NodeOffSide(NodeSide(_node->id(), false), next);
                         _augmented_edges[make_pair(no1, no2)] = 'S';
                     }
