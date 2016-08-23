@@ -357,6 +357,34 @@ size_t bp_length(const std::list<vg::NodeTraversal>& path) {
 }
 
 /**
+ * Get the minimum support of nodes and edges in path
+ */
+Support min_support(vg::VG& graph,
+                    const std::map<vg::Node*, Support>& nodeReadSupport,
+                    const std::map<vg::Edge*, Support>& edgeReadSupport,
+                    const std::list<vg::NodeTraversal>& path) {
+    auto cur = path.begin();
+    auto next = path.begin();
+    ++next;
+    Support minSupport;
+    for (; cur != path.end(); ++cur) {
+        // check the node support
+        Support support = nodeReadSupport.count(cur->node) ? nodeReadSupport.at(cur->node) : Support();
+        minSupport = std::min(minSupport, support);
+        
+        // check the edge support
+        if (next != path.end()) {
+            Edge* edge = graph.get_edge(*cur, *next);
+            assert(edge != NULL);
+            Support support = edgeReadSupport.count(edge) ? edgeReadSupport.at(edge) : Support();
+            minSupport = std::min(minSupport, support);
+            ++next;
+        }
+    }
+    return minSupport;
+}
+
+/**
  * Do a breadth-first search left from the given node traversal, and return
  * lengths and paths starting at the given node and ending on the indexed
  * reference path. Refuses to visit nodes with no support.
@@ -365,7 +393,8 @@ std::set<std::pair<size_t, std::list<vg::NodeTraversal>>> bfs_left(vg::VG& graph
     vg::NodeTraversal node, const ReferenceIndex& index,
     const std::map<vg::Node*, Support>& nodeReadSupport,
     const std::map<vg::Edge*, Support>& edgeReadSupport,
-    int64_t maxDepth = 10, bool stopIfVisited = false) {
+    int64_t maxDepth, bool stopIfVisited,
+    bool rankByMinSupport) {
 
     // Holds partial paths we want to return, with their lengths in bp.
     std::set<std::pair<size_t, std::list<vg::NodeTraversal>>> toReturn;
@@ -418,7 +447,9 @@ std::set<std::pair<size_t, std::list<vg::NodeTraversal>>> bfs_left(vg::VG& graph
             // lands in a place that is itself deleted.
             
             // Say we got to the right place
-            toReturn.emplace(bp_length(path), std::move(path));
+            size_t rank = rankByMinSupport ? total(
+                min_support(graph, nodeReadSupport, edgeReadSupport, path)) : bp_length(path);
+            toReturn.emplace(rank, std::move(path));
             
             // Don't bother looking for extensions, we already got there.
         } else if(path.size() <= maxDepth) {
@@ -482,11 +513,13 @@ std::set<std::pair<size_t, std::list<vg::NodeTraversal>>> bfs_right(vg::VG& grap
     vg::NodeTraversal node, const ReferenceIndex& index,
     const std::map<vg::Node*, Support>& nodeReadSupport,
     const std::map<vg::Edge*, Support>& edgeReadSupport,
-    int64_t maxDepth = 10, bool stopIfVisited = false) {
+    int64_t maxDepth, bool stopIfVisited,
+    bool rankByMinSupport) {
 
     // Look left from the backward version of the node.
     auto toConvert = bfs_left(graph, flip(node), index, nodeReadSupport,
-                              edgeReadSupport, maxDepth, stopIfVisited);
+                              edgeReadSupport, maxDepth, stopIfVisited,
+                              rankByMinSupport);
     
     // Since we can't modify set records in place, we need to do a copy
     std::set<std::pair<size_t, std::list<vg::NodeTraversal>>> toReturn;
@@ -523,7 +556,8 @@ std::set<std::pair<size_t, std::list<vg::NodeTraversal>>> bfs_right(vg::VG& grap
 std::vector<vg::NodeTraversal>
 find_bubble(vg::VG& graph, vg::Node* node, vg::Edge* edge, const ReferenceIndex& index,
             const std::map<vg::Node*, Support>& nodeReadSupport,
-            const std::map<vg::Edge*, Support>& edgeReadSupport, int64_t maxDepth = 10) {
+            const std::map<vg::Edge*, Support>& edgeReadSupport, int64_t maxDepth = 10,
+            bool rankByMinSupport = true) {
 
     // What are we going to find our left and right path halves based on?
     NodeTraversal left_traversal;
@@ -551,9 +585,9 @@ find_bubble(vg::VG& graph, vg::Node* node, vg::Edge* edge, const ReferenceIndex&
     // and this edge in the middle. Returns path lengths and paths in pairs in a
     // set.
     auto leftPaths = bfs_left(graph, left_traversal, index, nodeReadSupport,
-                              edgeReadSupport, maxDepth);
+                              edgeReadSupport, maxDepth, false, rankByMinSupport);
     auto rightPaths = bfs_right(graph, right_traversal, index, nodeReadSupport,
-                                edgeReadSupport, maxDepth);
+                                edgeReadSupport, maxDepth, false, rankByMinSupport);
     
     // Find a combination of two paths which gets us to the reference in a
     // consistent orientation (meaning that when you look at the ending nodes'
@@ -685,6 +719,13 @@ find_bubble(vg::VG& graph, vg::Node* node, vg::Edge* edge, const ReferenceIndex&
     std::list<std::list<vg::NodeTraversal>> rightConverted;
     for(auto lengthAndPath : rightPaths) {
         rightConverted.emplace_back(std::move(lengthAndPath.second));
+    }
+
+    // Actually want to go from greatest to least if using support
+    // (todo: merge into above loops)
+    if (rankByMinSupport) {
+        leftConverted.reverse();
+        rightConverted.reverse();
     }
     
     // Look for a valid combination, or return an empty path if one iesn't
