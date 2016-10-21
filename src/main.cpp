@@ -258,7 +258,7 @@ int main_filter(int argc, char** argv) {
             };
 
         int option_index = 0;
-        c = getopt_long (argc, argv, "s:r:d:e:fauo:Sx:R:B:c:vq:E:D:C:t:",
+        c = getopt_long (argc, argv, "s:r:fuo:Sx:R:B:c:vq:E:D:C:t:",
                          long_options, &option_index);
 
         /* Detect the end of the options. */
@@ -6511,7 +6511,6 @@ int main_index(int argc, char** argv) {
                               // just failing an assert in at()?
 
                               if(nonvariant_starts[sample_number * 2 + phase_offset] <= variant.position || !discard_overlaps) {
-
                                 for(size_t i = 0; i < alt_path.mapping_size(); i++) {
                                     // Then blit mappings from the alt over to the phase thread
                                     append_mapping(sample_number * 2 + phase_offset, alt_path.mapping(i));
