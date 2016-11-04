@@ -83,7 +83,8 @@ def run(cmd, proc_stdout = sys.stdout, proc_stderr = sys.stderr,
         check = True):
     """ run command in shell and throw exception if it doesn't work 
     """
-    print cmd
+    sys.stdout.write("{}\n".format(cmd))
+    sys.stdout.flush()
     proc = subprocess.Popen(cmd, shell=True, bufsize=-1,
                             stdout=proc_stdout, stderr=proc_stderr)
     output, errors = proc.communicate()
@@ -225,6 +226,7 @@ def call_chunk(xg_path, path_name, out_dir, chunks, chunk_i, path_size, overlap,
     # a chunk can be empty if nothing aligns there.
     if not os.path.isfile(gam_path):
         sys.stderr.write("Warning: chunk not found: {}\n".format(gam_path))
+        sys.stderr.flush()
         return
     
     # do the pileup.  this is the most resource intensive step,
