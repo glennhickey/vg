@@ -506,6 +506,10 @@ public:
         
     /// Execute a function on all sites in a preorder traversal
     void for_each_snarl_preorder(const function<void(const Snarl*)>& lambda) const;
+
+    /// Execute a function on all sites (under a given root if specified) in a postorder traversal
+    void for_each_snarl_postorder(const function<void(const Snarl*)>& lambda,
+                                  const Snarl* root = NULL) const;
         
     /// Execute a function on all top level sites in parallel
     void for_each_top_level_snarl_parallel(const function<void(const Snarl*)>& lambda) const;

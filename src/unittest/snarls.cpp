@@ -1827,10 +1827,30 @@ namespace vg {
                     SECTION("Second child has no children") {
                         REQUIRE(snarl_manager.children_of(child2).size() == 0);
                     }
+                }            
+
+                SECTION("Preorder traversal works") {
+                    vector<const Snarl*> preorder;
+                    snarl_manager.for_each_snarl_preorder([&](const Snarl* snarl) {
+                            preorder.push_back(snarl);
+                        });
+                    REQUIRE(preorder.size() == 3);
+                    REQUIRE(preorder[0] == child1);
+                    REQUIRE(preorder[1] == snarl_manager.children_of(child1)[0]);
+                    REQUIRE(preorder[2] == child2);
                 }
-                
+
+                SECTION("Postorder traversal works") {
+                    vector<const Snarl*> preorder;
+                    snarl_manager.for_each_snarl_postorder([&](const Snarl* snarl) {
+                            preorder.push_back(snarl);
+                        });
+                    REQUIRE(preorder.size() == 3);
+                    REQUIRE(preorder[0] == snarl_manager.children_of(child1)[0]);
+                    REQUIRE(preorder[1] == child1);
+                    REQUIRE(preorder[2] == child2);
+                }
             }
-                
         }
 
         TEST_CASE("bubbles can be found in graphs with only heads", "[bubbles]") {

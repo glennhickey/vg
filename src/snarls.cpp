@@ -705,6 +705,47 @@ void SnarlManager::for_each_snarl_preorder(const function<void(const Snarl*)>& l
     // Then we run that on the root of each tree of snarls.
     for_each_top_level_snarl(process);
 }
+
+void SnarlManager::for_each_snarl_postorder(const function<void(const Snarl*)>& lambda,
+                                            const Snarl* root) const {
+    // Do this non-recursively just in case
+    deque<const Snarl*> stack;
+
+    // For a given snarl in the stack, what is the next child to visit
+    // If next_child[snarl] == num_children(snarl) then all its children have been visited
+    unordered_map<const Snarl*, int> next_child;
+
+    // Queue up the root(s)
+    if (root) {
+        stack.push_back(root);
+        next_child[root] = 0;
+    } else {
+        for_each_top_level_snarl([&](const Snarl* snarl) {
+                stack.push_front(snarl); // visit roots left-to-right
+                next_child[snarl] = 0;
+            });
+    }
+
+    while (!stack.empty()) {
+        const Snarl* snarl = stack.back();
+        int& next_unvisited_child_idx = next_child[snarl];
+        const vector<const Snarl*>& children = children_of(snarl);
+        assert(next_unvisited_child_idx <= children.size());
+        
+        // if all the children have been visited, then we lambda
+        if (next_unvisited_child_idx == children.size()) {
+            lambda(snarl);
+            next_child.erase(snarl);
+            stack.pop_back();
+        }
+        // otherwise, we queue up the next unvisited child
+        else {
+            stack.push_back(children[next_unvisited_child_idx]);
+            next_child[children[next_unvisited_child_idx]] = 0;
+            ++next_unvisited_child_idx;
+        }
+    }
+}
     
 void SnarlManager::for_each_snarl_parallel(const function<void(const Snarl*)>& lambda) const {
     // We define a recursive function to apply the lambda in a preorder traversal of the snarl tree.
