@@ -106,9 +106,6 @@ void Genotyper::run(AugmentedGraph& augmented_graph,
             cerr << "Found " << ultrabubbles << " ultrabubbles" << endl;
     }
 
-    // We're going to count up all the affinities we compute
-    size_t total_affinities = 0;
-
     // We need a buffer for output
     vector<vector<Locus>> buffer;
     int thread_count = get_thread_count();
@@ -127,8 +124,10 @@ void Genotyper::run(AugmentedGraph& augmented_graph,
         vcf = start_vcf(cout, *reference_index, sample_name, contig_name, length_override);
     }
 
-    manager.for_each_snarl_parallel([&](const Snarl* snarl) {
+    manager.for_each_top_level_snarl_parallel([&](const Snarl* snarl) {
         // For each snarl in parallel
+
+        int tid = omp_get_thread_num();
 
         if (snarl->type() != ULTRABUBBLE) {
             // We only work on ultrabubbles right now
@@ -137,81 +136,16 @@ void Genotyper::run(AugmentedGraph& augmented_graph,
 
         // Get the contents
         pair<unordered_set<Node*>, unordered_set<Edge*> > snarl_contents =
-           manager.deep_contents(snarl, graph, true);
+            manager.deep_contents(snarl, graph, true);
 
-        // Test if the snarl can be longer than the reads
-        bool read_bounded = is_snarl_smaller_than_reads(snarl, snarl_contents, reads_by_name);
-        TraversalAlg use_traversal_alg = traversal_alg;
-        if (traversal_alg == TraversalAlg::Adaptive) {
-            use_traversal_alg = read_bounded ? TraversalAlg::Reads : TraversalAlg::Representative;
-        }
-
-        if ((use_traversal_alg != TraversalAlg::Reads && !manager.is_leaf(snarl)) ||
-            (use_traversal_alg == TraversalAlg::Reads && !manager.is_root(snarl))) {
-            // Todo : support nesting hierarchy!
-            
-            return;
-        }
-        
-        // Report the snarl to our statistics code
-        report_snarl(snarl, manager, reference_index, graph, reference_index);
-
-        int tid = omp_get_thread_num();
-
-        // Get the traverals
-        vector<SnarlTraversal> paths = get_snarl_traversals(augmented_graph, manager, reads_by_name,
-                                                            snarl, snarl_contents, reference_index,
-                                                            use_traversal_alg);
-
-        if(paths.empty()) {
-            // Don't do anything for ultrabubbles with no routes through
-            if(show_progress) {
-#pragma omp critical (cerr)
-                cerr << "Snarl " << snarl->start() << " - " << snarl->end() << " has " << paths.size() <<
-                    " alleles: skipped for having no alleles" << endl;
-            }
-            return;
-        }
-
-        if(show_progress) {
-#pragma omp critical (cerr)
-            cerr << "Snarl " << snarl->start() << " - " << snarl->end() << " has " << paths.size() << " alleles" << endl;
-            for(auto& path : paths) {
-                // Announce each allele in turn
-#pragma omp critical (cerr)
-                cerr << "\t" << traversal_to_string(graph, path) << endl;
-            }
-        }
-
-        // Compute the lengths of all the alleles
-        set<size_t> allele_lengths;
-        for(auto& path : paths) {
-            allele_lengths.insert(traversal_to_string(graph, path).size());
-        }
-
-        // Get the affinities for all the paths
+        // We do the snarl with dynamic programming bottom-up.
+        // This is done in series, with all parallelism coming from the top level above,
+        // which may be a concern for certain trees?
+        vector<SnarlTraversal> paths;
         map<const Alignment*, vector<Genotyper::Affinity>> affinities;
-
-        if(allele_lengths.size() > 1 && (realign_indels || !read_bounded)) {
-            // This is an indel, because we can change lengths. Use the slow route to do indel realignment.
-            affinities = get_affinities(augmented_graph, reads_by_name, snarl, snarl_contents, manager, paths);
-        } else {
-            // Just use string comparison. Don't re-align when
-            // length can't change, or when indle realignment is
-            // off.
-            affinities = get_affinities_fast(augmented_graph, reads_by_name, snarl, snarl_contents, manager, paths);
-        }
-
-        if(show_progress) {
-            report_affinities(affinities, paths, graph);
-            for(auto& alignment_and_affinities : affinities) {
-#pragma omp critical (total_affinities)
-                total_affinities += alignment_and_affinities.second.size();
-            }
-        }
-        
-        // Get a genotyped locus in the original frame
-        Locus genotyped = genotype_snarl(graph, snarl, paths, affinities);
+        Locus genotyped;        
+        run_snarl_bottom_up(augmented_graph, reference_index, reads_by_name, manager, snarl, snarl_contents,
+                            paths, affinities, genotyped);
 
         if (output_vcf) {
             // Get 0 or more variants from the ultrabubble
@@ -268,11 +202,6 @@ void Genotyper::run(AugmentedGraph& augmented_graph,
     } 
 
 
-    if(show_progress) {
-#pragma omp critical (cerr)
-        cerr << "Computed " << total_affinities << " affinities" << endl;
-    }
-
     // Dump statistics before the snarls go away, so the pointers won't be dangling
     print_statistics(cerr);
 
@@ -280,6 +209,88 @@ void Genotyper::run(AugmentedGraph& augmented_graph,
         delete vcf;
         delete reference_index;
     }
+
+}
+
+void Genotyper::run_snarl_bottom_up(AugmentedGraph& augmented_graph,
+                                    PathIndex* reference_index,
+                                    map<string, const Alignment*>& reads_by_name,
+                                    SnarlManager& manager,
+                                    const Snarl* snarl,
+                                    pair<unordered_set<Node*>, unordered_set<Edge*> >& snarl_contents,
+                                    // output parameters
+                                    vector<SnarlTraversal>& paths,
+                                    map<const Alignment*, vector<Affinity>>& affinities,
+                                    Locus& genotyped) {
+
+    // Unpack the graph
+    VG& graph = augmented_graph.graph;
+
+    // Test if the snarl can be longer than the reads
+    bool read_bounded = is_snarl_smaller_than_reads(snarl, snarl_contents, reads_by_name);
+    TraversalAlg use_traversal_alg = traversal_alg;
+    if (traversal_alg == TraversalAlg::Adaptive) {
+        use_traversal_alg = read_bounded ? TraversalAlg::Reads : TraversalAlg::Representative;
+    }
+
+    if ((use_traversal_alg != TraversalAlg::Reads && !manager.is_leaf(snarl)) ||
+        (use_traversal_alg == TraversalAlg::Reads && !manager.is_root(snarl))) {
+        // Todo : support nesting hierarchy!
+            
+        return;
+    }
+        
+    // Report the snarl to our statistics code
+    report_snarl(snarl, manager, reference_index, graph, reference_index);
+
+    // Get the traverals
+    paths = get_snarl_traversals(augmented_graph, manager, reads_by_name,
+                                 snarl, snarl_contents, reference_index,
+                                 use_traversal_alg);
+
+    if(paths.empty()) {
+        // Don't do anything for ultrabubbles with no routes through
+        if(show_progress) {
+#pragma omp critical (cerr)
+            cerr << "Snarl " << snarl->start() << " - " << snarl->end() << " has " << paths.size() <<
+                " alleles: skipped for having no alleles" << endl;
+        }
+        return;
+    }
+
+    if(show_progress) {
+#pragma omp critical (cerr)
+        cerr << "Snarl " << snarl->start() << " - " << snarl->end() << " has " << paths.size() << " alleles" << endl;
+        for(auto& path : paths) {
+            // Announce each allele in turn
+#pragma omp critical (cerr)
+            cerr << "\t" << traversal_to_string(graph, path) << endl;
+        }
+    }
+
+    // Compute the lengths of all the alleles
+    set<size_t> allele_lengths;
+    for(auto& path : paths) {
+        allele_lengths.insert(traversal_to_string(graph, path).size());
+    }
+
+    // Get the affinities for all the paths
+    if(allele_lengths.size() > 1 && (realign_indels || !read_bounded)) {
+        // This is an indel, because we can change lengths. Use the slow route to do indel realignment.
+        affinities = get_affinities(augmented_graph, reads_by_name, snarl, snarl_contents, manager, paths);
+    } else {
+        // Just use string comparison. Don't re-align when
+        // length can't change, or when indle realignment is
+        // off.
+        affinities = get_affinities_fast(augmented_graph, reads_by_name, snarl, snarl_contents, manager, paths);
+    }
+
+    if(show_progress) {
+        report_affinities(affinities, paths, graph);
+    }
+        
+    // Get a genotyped locus in the original frame
+    genotyped = genotype_snarl(graph, snarl, paths, affinities);
 
 }
 

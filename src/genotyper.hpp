@@ -152,6 +152,7 @@ public:
 
     /// Process and write output.
     /// Alignments must be embedded in the AugmentedGraph.
+    /// Top-level snarls dealt with in parallel
     void run(AugmentedGraph& graph,
              ostream& out,
              string ref_path_name,
@@ -163,7 +164,19 @@ public:
              bool output_json = false,
              int length_override = 0,
              int variant_offset = 0);
-    
+
+    /// Run a single top-level snarl
+    void run_snarl_bottom_up(AugmentedGraph& augmented_graph,
+                             PathIndex* reference_index,
+                             map<string, const Alignment*>& reads_by_name,
+                             SnarlManager& manager,
+                             const Snarl* snarl,
+                             pair<unordered_set<Node*>, unordered_set<Edge*> >& snarl_contents,
+                             // output parameters
+                             vector<SnarlTraversal>& paths,
+                             map<const Alignment*, vector<Affinity>>& affinities,
+                             Locus& genotyped);
+        
     /**
      * Given an Alignment and a Snarl, compute a phred score for the quality of
      * the alignment's bases within the snarl overall (not counting the start and
