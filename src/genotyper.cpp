@@ -124,7 +124,7 @@ void Genotyper::run(AugmentedGraph& augmented_graph,
         vcf = start_vcf(cout, *reference_index, sample_name, contig_name, length_override);
     }
 
-    manager.for_each_top_level_snarl_parallel([&](const Snarl* snarl) {
+    manager.for_each_snarl_parallel([&](const Snarl* snarl) {
         // For each snarl in parallel
 
         int tid = omp_get_thread_num();
@@ -141,11 +141,8 @@ void Genotyper::run(AugmentedGraph& augmented_graph,
         // We do the snarl with dynamic programming bottom-up.
         // This is done in series, with all parallelism coming from the top level above,
         // which may be a concern for certain trees?
-        vector<SnarlTraversal> paths;
-        map<const Alignment*, vector<Genotyper::Affinity>> affinities;
-        Locus genotyped;        
-        run_snarl_bottom_up(augmented_graph, reference_index, reads_by_name, manager, snarl, snarl_contents,
-                            paths, affinities, genotyped);
+        Locus genotyped = run_root_snarl(augmented_graph, reference_index, reads_by_name,
+                                         manager, snarl, snarl_contents);
 
         if (output_vcf) {
             // Get 0 or more variants from the ultrabubble
@@ -212,17 +209,16 @@ void Genotyper::run(AugmentedGraph& augmented_graph,
 
 }
 
-void Genotyper::run_snarl_bottom_up(AugmentedGraph& augmented_graph,
-                                    PathIndex* reference_index,
-                                    map<string, const Alignment*>& reads_by_name,
-                                    SnarlManager& manager,
-                                    const Snarl* snarl,
-                                    pair<unordered_set<Node*>, unordered_set<Edge*> >& snarl_contents,
-                                    // output parameters
-                                    vector<SnarlTraversal>& paths,
-                                    map<const Alignment*, vector<Affinity>>& affinities,
-                                    Locus& genotyped) {
+Locus Genotyper::run_root_snarl(AugmentedGraph& augmented_graph,
+                                PathIndex* reference_index,
+                                map<string, const Alignment*>& reads_by_name,
+                                SnarlManager& manager,
+                                const Snarl* snarl,
+                                pair<unordered_set<Node*>, unordered_set<Edge*> >& snarl_contents) {
 
+    // To return
+    Locus genotyped;
+    
     // Unpack the graph
     VG& graph = augmented_graph.graph;
 
@@ -235,16 +231,16 @@ void Genotyper::run_snarl_bottom_up(AugmentedGraph& augmented_graph,
 
     if ((use_traversal_alg != TraversalAlg::Reads && !manager.is_leaf(snarl)) ||
         (use_traversal_alg == TraversalAlg::Reads && !manager.is_root(snarl))) {
-        // Todo : support nesting hierarchy!
+        // Todo : support nesting hierarchy (and actually only call this funciton on roots)
             
-        return;
+        return genotyped;
     }
         
     // Report the snarl to our statistics code
     report_snarl(snarl, manager, reference_index, graph, reference_index);
 
     // Get the traverals
-    paths = get_snarl_traversals(augmented_graph, manager, reads_by_name,
+    vector<SnarlTraversal> paths = get_snarl_traversals(augmented_graph, manager, reads_by_name,
                                  snarl, snarl_contents, reference_index,
                                  use_traversal_alg);
 
@@ -255,7 +251,7 @@ void Genotyper::run_snarl_bottom_up(AugmentedGraph& augmented_graph,
             cerr << "Snarl " << snarl->start() << " - " << snarl->end() << " has " << paths.size() <<
                 " alleles: skipped for having no alleles" << endl;
         }
-        return;
+        return genotyped;
     }
 
     if(show_progress) {
@@ -274,6 +270,8 @@ void Genotyper::run_snarl_bottom_up(AugmentedGraph& augmented_graph,
         allele_lengths.insert(traversal_to_string(graph, path).size());
     }
 
+    map<const Alignment*, vector<Genotyper::Affinity>> affinities;
+    
     // Get the affinities for all the paths
     if(allele_lengths.size() > 1 && (realign_indels || !read_bounded)) {
         // This is an indel, because we can change lengths. Use the slow route to do indel realignment.
@@ -289,9 +287,19 @@ void Genotyper::run_snarl_bottom_up(AugmentedGraph& augmented_graph,
         report_affinities(affinities, paths, graph);
     }
         
-    // Get a genotyped locus in the original frame
-    genotyped = genotype_snarl(graph, snarl, paths, affinities);
+    // Get a locus in the original frame
+    genotyped = create_snarl_locus(graph, snarl, paths, affinities);
 
+    // Get the diploid genotypes
+    vector<Genotype> genotypes_sorted = genotype_snarl(graph, snarl, paths, affinities, 2);
+
+    // add them into the locus
+    for(auto& genotype : genotypes_sorted) {
+        // Add a genotype to the Locus for every one we looked at, in order by descending posterior
+        *genotyped.add_genotype() = genotype;
+    }
+
+    return genotyped;
 }
 
 
@@ -1109,7 +1117,8 @@ Genotyper::get_affinities_fast(AugmentedGraph& aug,
     return to_return;
 }
 
-double Genotyper::get_genotype_log_likelihood(VG& graph, const Snarl* snarl, const vector<int>& genotype, const vector<pair<const Alignment*, vector<Affinity>>>& alignment_consistency) {
+double Genotyper::get_genotype_log_likelihood(VG& graph, const Snarl* snarl, const vector<int>& genotype,
+                                              const map<const Alignment*, vector<Affinity>>& affinities) {
     // For each genotype, calculate P(observed reads | genotype) as P(all reads
     // that don't support an allele from the genotype are mismapped or
     // miscalled) * P(all reads that do support alleles from the genotype ended
@@ -1145,7 +1154,7 @@ double Genotyper::get_genotype_log_likelihood(VG& graph, const Snarl* snarl, con
     // forward and reverse giving support.
     map<int, pair<int, int>> strand_count_by_allele_and_orientation;
 
-    for(auto& read_and_consistency : alignment_consistency) {
+    for(auto& read_and_consistency : affinities) {
         // For each read, work out if it supports a genotype we have or not.
 
         // Split out the alignment from its consistency flags
@@ -1284,7 +1293,7 @@ double Genotyper::get_genotype_log_likelihood(VG& graph, const Snarl* snarl, con
         // And how many total reads there are (# of trials).
         int total_reads = 0;
 
-        for(auto& read_and_consistency : alignment_consistency) {
+        for(auto& read_and_consistency : affinities) {
             auto& consistency = read_and_consistency.second;
 
             if(consistency.size() <= max(genotype.at(0), genotype.at(1))) {
@@ -1378,7 +1387,7 @@ double Genotyper::get_genotype_log_likelihood(VG& graph, const Snarl* snarl, con
         // Now we will assign reads to ambiguity classes and count them in here.
         unordered_map<vector<bool>, int> reads_by_class;
         
-        for(auto& read_and_consistency : alignment_consistency) {
+        for(auto& read_and_consistency : affinities) {
             // For each read, look at what it is consistent with
             auto& consistency = read_and_consistency.second;
             
@@ -1552,14 +1561,13 @@ string Genotyper::get_qualities_in_snarl(VG& graph, const Snarl* snarl, const Al
 
 }
 
-Locus Genotyper::genotype_snarl(VG& graph,
-                               const Snarl* snarl,
-                               const vector<SnarlTraversal>& snarl_paths,
-                               const map<const Alignment*, vector<Affinity>>& affinities) {
+Locus Genotyper::create_snarl_locus(VG& graph,
+                                    const Snarl* snarl,
+                                    const vector<SnarlTraversal>& snarl_paths,
+                                    const map<const Alignment*, vector<Affinity>>& affinities) {
 
-    // Freebayes way (improved with multi-support)
-
-    // We're going to populate this locus
+    // We're going to make a locus for the snarl.  Note that we're not going to
+    // fill in any genotypes here, just the alleles and support
     Locus to_return;
 
     for(auto& path : snarl_paths) {
@@ -1577,11 +1585,6 @@ Locus Genotyper::genotype_snarl(VG& graph,
     cerr << "Looking between " << snarl->start() << " and " << snarl->end() << endl;
 #endif
 
-    // We'll fill this in with the alignments for this snarl and their consistency-with-alleles flags.
-    vector<pair<const Alignment*, vector<Affinity>>> alignment_consistency;
-
-    // We fill this in with totals of reads supporting alleles
-    vector<int> reads_consistent_with_allele(snarl_paths.size(), 0);
     // And this with the same thing split out by forward and reverse strand
     vector<pair<int, int>> strand_support_for_allele(snarl_paths.size(), make_pair(0, 0));
 
@@ -1610,29 +1613,22 @@ Locus Genotyper::genotype_snarl(VG& graph,
 
         // Of the alleles available, how many are consistent with this read?
         size_t consistent_alleles = 0;
+        size_t last_consistent_index =  alignment_and_affinities.second.size();
         for(size_t i = 0; i < alignment_and_affinities.second.size(); i++) {
             consistent_alleles += alignment_and_affinities.second.at(i).consistent;
+            last_consistent_index = i;
         }
 
         if (consistent_alleles == 1) {
-            // This read is consistent with exactly one allele. Count it.
-            
-            for(size_t i = 0; i < alignment_and_affinities.second.size(); i++) {
-                if(alignment_and_affinities.second.at(i).consistent) {
-                    // We found the consistent allele again
-                
-                    // This read is consistent with this allele
-                    reads_consistent_with_allele[i]++;
-                    if(alignment_and_affinities.second.at(i).is_reverse) {
-                        // It is on the reverse strand
-                        strand_support_for_allele[i].second++;
-                        is_reverse = true;
-                    } else {
-                        // It is on the forward strand
-                        strand_support_for_allele[i].first++;
-                        is_forward = true;
-                    }
-                }
+            // This read is consistent with exactly one allele (whose index we remembered). Count it.
+            if(alignment_and_affinities.second.at(last_consistent_index).is_reverse) {
+                // It is on the reverse strand
+                strand_support_for_allele[last_consistent_index].second++;
+                is_reverse = true;
+            } else {
+                // It is on the forward strand
+                strand_support_for_allele[last_consistent_index].first++;
+                is_forward = true;
             }
         }
 
@@ -1656,9 +1652,6 @@ Locus Genotyper::genotype_snarl(VG& graph,
             cerr << "Warning! Read supports no alleles!" << endl;
         }
 
-        // Save the alignment and its affinities, which we use to get GLs.
-        alignment_consistency.push_back(alignment_and_affinities);
-
     }
 
 #ifdef debug
@@ -1670,8 +1663,11 @@ Locus Genotyper::genotype_snarl(VG& graph,
         }
 #pragma omp critical (cerr)
         {
-            cerr << "a" << i << "(" << allele_name.str() << "): " << reads_consistent_with_allele[i] << "/" << affinities.size() << " reads consistent" << endl;
-            for(auto& read_and_consistency : alignment_consistency) {
+            int reads_consistent_with_allele = strand_support_for_allele[i].first +
+                strand_support_for_allele[i].second;
+            cerr << "a" << i << "(" << allele_name.str() << "): "
+                 << reads_consistent_with_allele << "/" << affinities.size() << " reads consistent" << endl;
+            for(auto& read_and_consistency : affinities) {
                 if(read_and_consistency.second.size() > i && 
                    read_and_consistency.second[i].consistent &&
                    read_and_consistency.first->sequence().size() < 30) {
@@ -1683,60 +1679,6 @@ Locus Genotyper::genotype_snarl(VG& graph,
     }
 #endif
 
-    // We'll go through all the genotypes, fill in their probabilities, put them
-    // in here, and then sort them to find the best.
-    vector<Genotype> genotypes_sorted;
-
-    for(int allele1 = 0; allele1 < snarl_paths.size(); allele1++) {
-        // For each first allele in the genotype
-        for(int allele2 = 0; allele2 <= allele1; allele2++) {
-            // For each second allele so we get all order-independent combinations
-
-            // Make the combo
-            vector<int> genotype_vector = {allele1, allele2};
-
-            // Compute the log probability of the data given the genotype
-            double log_likelihood = get_genotype_log_likelihood(graph, snarl, genotype_vector, alignment_consistency);
-
-            // Compute the prior
-            double log_prior = get_genotype_log_prior(genotype_vector);
-
-            // Apply Bayes Rule
-            double log_posterior_unnormalized = log_likelihood + log_prior;
-
-#ifdef debug
-#pragma omp critical (cerr)
-            {
-                cerr << "P(obs | a" << allele1 << "/a" << allele2 << ") = " << logprob_to_prob(log_likelihood) <<
-                    " (" << log_likelihood << ")" << endl;
-                cerr << "P(a" << allele1 << "/a" << allele2 << ") = " << logprob_to_prob(log_prior) <<
-                    " (" << log_prior << ")" << endl;
-                cerr << "P(a" << allele1 << "/a" << allele2 << " | obs) * P(obs) = " <<
-                    logprob_to_prob(log_posterior_unnormalized) << " (" << log_posterior_unnormalized << ")" << endl;
-            }
-#endif
-
-            // Fill in the actual Genotype object
-            Genotype genotype;
-            genotype.set_log_likelihood(log_likelihood);
-            genotype.set_log_prior(log_prior);
-            genotype.set_log_posterior(log_posterior_unnormalized);
-
-            for(auto allele_id : genotype_vector) {
-                // Copy over all the indexes of alleles in the genotype
-                genotype.add_allele(allele_id);
-            }
-
-            // Put it in to sort
-            genotypes_sorted.push_back(genotype);
-        }
-    }
-
-    // Sort the genotypes in order of descending log posterior.
-    sort(genotypes_sorted.begin(), genotypes_sorted.end(), [](const Genotype& a, const Genotype& b) {
-            return a.log_posterior() > b.log_posterior();
-        });
-
     for(size_t i = 0; i < snarl_paths.size(); i++) {
         // For each allele, make a support
         Support* support = to_return.add_support();
@@ -1745,18 +1687,89 @@ Locus Genotyper::genotype_snarl(VG& graph,
         support->set_reverse(strand_support_for_allele[i].second);
     }
 
-    for(auto& genotype : genotypes_sorted) {
-        // Add a genotype to the Locus for every one we looked at, in order by descending posterior
-        *to_return.add_genotype() = genotype;
-    }
-
     // Set up total support for overall depth
     Support* overall_support = to_return.mutable_overall_support();
     overall_support->set_forward(overall_forward_reads);
     overall_support->set_reverse(overall_reverse_reads);
 
-    // Now we've populated the genotype so return it.
+
     return to_return;
+}
+
+vector<Genotype> Genotyper::genotype_snarl(VG& graph,
+                                           const Snarl* snarl,
+                                           const vector<SnarlTraversal>& snarl_paths,
+                                           const map<const Alignment*, vector<Affinity>>& affinities,
+                                           size_t ploidy) {
+    
+    // Freebayes way (improved with multi-support)
+
+    // We'll go through all the genotypes, fill in their probabilities, put them
+    // in here, and then sort them to find the best.
+    vector<Genotype> genotypes_sorted;
+
+    // generate all the (order-independent) allele combinations.
+    // we only support haploid/diploid for now.  the likelihood supports more so
+    // in theory we can swap out a general combination generator here
+    vector<vector<int> > genotype_vectors;
+    assert(ploidy == 1 || ploidy == 2);
+    for(int allele1 = 0; allele1 < snarl_paths.size(); allele1++) {
+        if (ploidy == 1) {
+            genotype_vectors.push_back({allele1});
+        } else {
+            for(int allele2 = 0; allele2 <= allele1; allele2++) {
+            // For each second allele so we get all order-independent combinations
+                genotype_vectors.push_back({allele1, allele2});
+            }
+        }
+    }
+
+    // Compute the probability of each possible gneotype
+    for (auto& genotype_vector : genotype_vectors) {
+
+        // Compute the log probability of the data given the genotype
+        double log_likelihood = get_genotype_log_likelihood(graph, snarl, genotype_vector, affinities);
+            
+        // Compute the prior
+        double log_prior = get_genotype_log_prior(genotype_vector);
+
+        // Apply Bayes Rule
+        double log_posterior_unnormalized = log_likelihood + log_prior;
+
+#ifdef debug
+#pragma omp critical (cerr)
+        {
+            cerr << "P(obs | a" << allele1 << "/a" << allele2 << ") = " << logprob_to_prob(log_likelihood) <<
+                " (" << log_likelihood << ")" << endl;
+            cerr << "P(a" << allele1 << "/a" << allele2 << ") = " << logprob_to_prob(log_prior) <<
+                " (" << log_prior << ")" << endl;
+            cerr << "P(a" << allele1 << "/a" << allele2 << " | obs) * P(obs) = " <<
+                logprob_to_prob(log_posterior_unnormalized) << " (" << log_posterior_unnormalized << ")" << endl;
+        }
+#endif
+
+        // Fill in the actual Genotype object
+        Genotype genotype;
+        genotype.set_log_likelihood(log_likelihood);
+        genotype.set_log_prior(log_prior);
+        genotype.set_log_posterior(log_posterior_unnormalized);
+        
+        for(auto allele_id : genotype_vector) {
+            // Copy over all the indexes of alleles in the genotype
+            genotype.add_allele(allele_id);
+        }
+
+        // Put it in to sort
+        genotypes_sorted.push_back(genotype);
+    }
+
+
+    // Sort the genotypes in order of descending log posterior.
+    sort(genotypes_sorted.begin(), genotypes_sorted.end(), [](const Genotype& a, const Genotype& b) {
+            return a.log_posterior() > b.log_posterior();
+        });
+
+    return genotypes_sorted;
 }
 
 void Genotyper::write_vcf_header(std::ostream& stream, const std::string& sample_name, const std::string& contig_name, size_t contig_size) {

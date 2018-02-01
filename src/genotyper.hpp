@@ -166,16 +166,12 @@ public:
              int variant_offset = 0);
 
     /// Run a single top-level snarl
-    void run_snarl_bottom_up(AugmentedGraph& augmented_graph,
-                             PathIndex* reference_index,
-                             map<string, const Alignment*>& reads_by_name,
-                             SnarlManager& manager,
-                             const Snarl* snarl,
-                             pair<unordered_set<Node*>, unordered_set<Edge*> >& snarl_contents,
-                             // output parameters
-                             vector<SnarlTraversal>& paths,
-                             map<const Alignment*, vector<Affinity>>& affinities,
-                             Locus& genotyped);
+    Locus run_root_snarl(AugmentedGraph& augmented_graph,
+                         PathIndex* reference_index,
+                         map<string, const Alignment*>& reads_by_name,
+                         SnarlManager& manager,
+                         const Snarl* snarl,
+                         pair<unordered_set<Node*>, unordered_set<Edge*> >& snarl_contents);
         
     /**
      * Given an Alignment and a Snarl, compute a phred score for the quality of
@@ -257,12 +253,26 @@ public:
                                                                 const SnarlManager& manager,
                                                                 const vector<SnarlTraversal>& superbubble_paths,
                                                                 bool allow_internal_alignments = false);
-        
+
+    /** 
+     * Make a Locus for the Snarl.  Fills in the various alleles (from the snarl_paths) and computes 
+     * their supports from the input affinities.  Does not fill in any genotype information
+     */
+    Locus create_snarl_locus(VG& graph,
+                             const Snarl* snarl,
+                             const vector<SnarlTraversal>& snarl_paths,
+                             const map<const Alignment*, vector<Affinity>>& affinities);
+
     /**
      * Compute annotated genotype from affinities and superbubble paths.
      * Needs access to the graph so it can chop up the alignments, which requires node sizes.
+     * The genotypes are returned sorted in decreasingly order by their probabilities.
+     * Only plody 1 or 2 is supported. 
      */
-    Locus genotype_snarl(VG& graph, const Snarl* snarl, const vector<SnarlTraversal>& superbubble_paths, const map<const Alignment*, vector<Affinity>>& affinities);
+    vector<Genotype> genotype_snarl(VG& graph, const Snarl* snarl,
+                                    const vector<SnarlTraversal>& superbubble_paths,
+                                    const map<const Alignment*, vector<Affinity>>& affinities,
+                                    size_t ploidy);
         
     /**
      * Compute the probability of the observed alignments given the genotype.
@@ -276,7 +286,7 @@ public:
      *
      * Returns a natural log likelihood.
      */
-    double get_genotype_log_likelihood(VG& graph, const Snarl* snarl, const vector<int>& genotype, const vector<pair<const Alignment*, vector<Affinity>>>& alignment_consistency);
+    double get_genotype_log_likelihood(VG& graph, const Snarl* snarl, const vector<int>& genotype, const map<const Alignment*, vector<Affinity>>& affinities);
     
     /**
      * Compute the prior probability of the given genotype.
