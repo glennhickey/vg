@@ -65,6 +65,18 @@ public:
         
     };
 
+    // Represents an entry in our dynamic programming table.  It's everything we computed
+    // for one snarl that we may need when doing its parent
+    struct SnarlGenotypeInfo {
+        // Locus for the snarl (where to look for supports)
+        Locus locus;
+        // genotypes[i][j] is the jth best Genotype for ploidy i
+        vector<vector<Genotype> > genotypes;
+        // Affinity information
+        map<const Alignment*, vector<Affinity>> affinities;
+        // traversals
+        vector<SnarlTraversal> paths;
+    };
 
     // How many nodes max should we walk when checking if a path runs through a superbubble/snarl
     size_t max_path_search_steps = 100;
@@ -170,8 +182,27 @@ public:
                          PathIndex* reference_index,
                          map<string, const Alignment*>& reads_by_name,
                          SnarlManager& manager,
-                         const Snarl* snarl,
-                         pair<unordered_set<Node*>, unordered_set<Edge*> >& snarl_contents);
+                         const Snarl* snarl);
+
+    /// Run a single snarl, assuming that all its child snarls have been done.
+    /// Results get put into dp_table
+    void run_snarl_bottom_up(AugmentedGraph& augmented_graph,
+                             PathIndex* reference_index,
+                             map<string, const Alignment*>& reads_by_name,
+                             SnarlManager& manager,
+                             const Snarl* snarl,
+                             unordered_map<const Snarl*, unique_ptr<SnarlGenotypeInfo> >& dp_table);
+
+    /// Get the affinities of a snarl, using the affinities for any child snarls from dp_table
+    map<const Alignment*, vector<Affinity>>
+        get_nested_affinities(AugmentedGraph& augmented_graph,
+                              const map<string, const Alignment*>& reads_by_name,
+                              const Snarl* snarl,
+                              const pair<unordered_set<Node*>, unordered_set<Edge*> >& snarl_contents,
+                              const SnarlManager& manager,
+                              const vector<SnarlTraversal>& paths,
+                              bool fast_affinities,
+                              unordered_map<const Snarl*, unique_ptr<SnarlGenotypeInfo> >& dp_table);
         
     /**
      * Given an Alignment and a Snarl, compute a phred score for the quality of
@@ -209,7 +240,6 @@ public:
     vector<SnarlTraversal> get_snarl_traversals(AugmentedGraph& augmented_graph, SnarlManager& manager,
                                                 map<string, const Alignment*>& reads_by_name,
                                                 const Snarl* snarl,
-                                                const pair<unordered_set<Node*>, unordered_set<Edge*> >& contents,
                                                 PathIndex* reference_index,
                                                 TraversalAlg use_traversal_alg);
     

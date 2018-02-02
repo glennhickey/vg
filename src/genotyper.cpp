@@ -124,7 +124,7 @@ void Genotyper::run(AugmentedGraph& augmented_graph,
         vcf = start_vcf(cout, *reference_index, sample_name, contig_name, length_override);
     }
 
-    manager.for_each_snarl_parallel([&](const Snarl* snarl) {
+    manager.for_each_top_level_snarl_parallel([&](const Snarl* snarl) {
         // For each snarl in parallel
 
         int tid = omp_get_thread_num();
@@ -142,7 +142,7 @@ void Genotyper::run(AugmentedGraph& augmented_graph,
         // This is done in series, with all parallelism coming from the top level above,
         // which may be a concern for certain trees?
         Locus genotyped = run_root_snarl(augmented_graph, reference_index, reads_by_name,
-                                         manager, snarl, snarl_contents);
+                                         manager, snarl);
 
         if (output_vcf) {
             // Get 0 or more variants from the ultrabubble
@@ -213,8 +213,7 @@ Locus Genotyper::run_root_snarl(AugmentedGraph& augmented_graph,
                                 PathIndex* reference_index,
                                 map<string, const Alignment*>& reads_by_name,
                                 SnarlManager& manager,
-                                const Snarl* snarl,
-                                pair<unordered_set<Node*>, unordered_set<Edge*> >& snarl_contents) {
+                                const Snarl* root_snarl) {
 
     // To return
     Locus genotyped;
@@ -222,26 +221,56 @@ Locus Genotyper::run_root_snarl(AugmentedGraph& augmented_graph,
     // Unpack the graph
     VG& graph = augmented_graph.graph;
 
+    // Make our dynamic programming table
+    unordered_map<const Snarl*, unique_ptr<SnarlGenotypeInfo> > dp_table;
+
+    // Fill our table bottom-up
+    manager.for_each_snarl_postorder([&](const Snarl* snarl) {
+            run_snarl_bottom_up(augmented_graph,
+                                reference_index,
+                                reads_by_name,
+                                manager,
+                                snarl,
+                                dp_table);
+        }, root_snarl);
+
+    return dp_table[root_snarl]->locus;
+}
+
+void Genotyper::run_snarl_bottom_up(AugmentedGraph& augmented_graph,
+                                    PathIndex* reference_index,
+                                    map<string, const Alignment*>& reads_by_name,
+                                    SnarlManager& manager,
+                                    const Snarl* snarl,
+                                    unordered_map<const Snarl*, unique_ptr<SnarlGenotypeInfo> >& dp_table) {
+
+    // Make a new entry to hold all our results for this snarl
+    assert(!dp_table.count(snarl));
+    SnarlGenotypeInfo* table_entry = new SnarlGenotypeInfo();
+    dp_table[snarl] = unique_ptr<SnarlGenotypeInfo>(table_entry);
+    map<const Alignment*, vector<Affinity>>& affinities = table_entry->affinities;
+    vector<SnarlTraversal>& paths = table_entry->paths;
+    Locus& locus = table_entry->locus;
+    vector<vector<Genotype> >& genotypes = table_entry->genotypes;
+
+    VG& graph = augmented_graph.graph;
+
+    pair<unordered_set<Node*>, unordered_set<Edge*> > snarl_contents =
+        manager.shallow_contents(snarl, graph, true);
+    
     // Test if the snarl can be longer than the reads
     bool read_bounded = is_snarl_smaller_than_reads(snarl, snarl_contents, reads_by_name);
     TraversalAlg use_traversal_alg = traversal_alg;
     if (traversal_alg == TraversalAlg::Adaptive) {
         use_traversal_alg = read_bounded ? TraversalAlg::Reads : TraversalAlg::Representative;
     }
-
-    if ((use_traversal_alg != TraversalAlg::Reads && !manager.is_leaf(snarl)) ||
-        (use_traversal_alg == TraversalAlg::Reads && !manager.is_root(snarl))) {
-        // Todo : support nesting hierarchy (and actually only call this funciton on roots)
-            
-        return genotyped;
-    }
         
     // Report the snarl to our statistics code
     report_snarl(snarl, manager, reference_index, graph, reference_index);
 
     // Get the traverals
-    vector<SnarlTraversal> paths = get_snarl_traversals(augmented_graph, manager, reads_by_name,
-                                 snarl, snarl_contents, reference_index,
+    paths = get_snarl_traversals(augmented_graph, manager, reads_by_name,
+                                 snarl, reference_index,
                                  use_traversal_alg);
 
     if(paths.empty()) {
@@ -251,7 +280,7 @@ Locus Genotyper::run_root_snarl(AugmentedGraph& augmented_graph,
             cerr << "Snarl " << snarl->start() << " - " << snarl->end() << " has " << paths.size() <<
                 " alleles: skipped for having no alleles" << endl;
         }
-        return genotyped;
+        return;
     }
 
     if(show_progress) {
@@ -270,10 +299,46 @@ Locus Genotyper::run_root_snarl(AugmentedGraph& augmented_graph,
         allele_lengths.insert(traversal_to_string(graph, path).size());
     }
 
-    map<const Alignment*, vector<Genotyper::Affinity>> affinities;
+    // we toggle the affinity finder here.  Todo: this may be better done at a lower level
+    bool fast_affinities = !(allele_lengths.size() > 1 && (realign_indels || !read_bounded));
+    affinities = get_nested_affinities(augmented_graph, reads_by_name, snarl, snarl_contents, manager,
+                                       paths, fast_affinities, dp_table);
+
+    if(show_progress) {
+        report_affinities(affinities, paths, graph);
+    }
+        
+    // Get a locus in the original frame
+    locus = create_snarl_locus(graph, snarl, paths, affinities);
+
+    genotypes.resize(3);
+    // Get the haploid and diploid genotypes
+    for (size_t ploidy = 1; ploidy <=2; ++ploidy) {
+        genotypes[ploidy] = genotype_snarl(graph, snarl, paths, affinities, ploidy);
+    }
     
+    // add the diploid genotypes to make a stand-alone locus
+    for(auto& genotype : genotypes[2]) {
+        // Add a genotype to the Locus for every one we looked at, in order by descending posterior
+        *locus.add_genotype() = genotype;
+    }
+}
+
+map<const Alignment*, vector<Genotyper::Affinity>>
+Genotyper::get_nested_affinities(AugmentedGraph& augmented_graph,
+                                 const map<string, const Alignment*>& reads_by_name,
+                                 const Snarl* snarl,
+                                 const pair<unordered_set<Node*>, unordered_set<Edge*> >& snarl_contents,
+                                 const SnarlManager& manager,
+                                 const vector<SnarlTraversal>& paths,
+                                 bool fast_affinities,
+                                 unordered_map<const Snarl*, unique_ptr<SnarlGenotypeInfo> >& dp_table ) {
+    // this runs a viterbi-like dynamic programming algorithm to find the traversals with the
+    // best affinities, 
     // Get the affinities for all the paths
-    if(allele_lengths.size() > 1 && (realign_indels || !read_bounded)) {
+    map<const Alignment*, vector<Affinity>> affinities;
+        
+    if(!fast_affinities) {
         // This is an indel, because we can change lengths. Use the slow route to do indel realignment.
         affinities = get_affinities(augmented_graph, reads_by_name, snarl, snarl_contents, manager, paths);
     } else {
@@ -283,25 +348,8 @@ Locus Genotyper::run_root_snarl(AugmentedGraph& augmented_graph,
         affinities = get_affinities_fast(augmented_graph, reads_by_name, snarl, snarl_contents, manager, paths);
     }
 
-    if(show_progress) {
-        report_affinities(affinities, paths, graph);
-    }
-        
-    // Get a locus in the original frame
-    genotyped = create_snarl_locus(graph, snarl, paths, affinities);
-
-    // Get the diploid genotypes
-    vector<Genotype> genotypes_sorted = genotype_snarl(graph, snarl, paths, affinities, 2);
-
-    // add them into the locus
-    for(auto& genotype : genotypes_sorted) {
-        // Add a genotype to the Locus for every one we looked at, in order by descending posterior
-        *genotyped.add_genotype() = genotype;
-    }
-
-    return genotyped;
+    return affinities;
 }
-
 
 pair<pair<int64_t, int64_t>, bool> Genotyper::get_snarl_reference_bounds(const Snarl* snarl, const PathIndex& index,
     const HandleGraph* graph) {
@@ -422,7 +470,6 @@ bool Genotyper::is_snarl_smaller_than_reads(const Snarl* snarl,
 vector<SnarlTraversal> Genotyper::get_snarl_traversals(AugmentedGraph& augmented_graph, SnarlManager& manager,
                                                        map<string, const Alignment*>& reads_by_name,
                                                        const Snarl* snarl,
-                                                       const pair<unordered_set<Node*>, unordered_set<Edge*> >& contents,
                                                        PathIndex* ref_path_index,
                                                        TraversalAlg use_traversal_alg) {
     vector<SnarlTraversal> paths;
