@@ -2,7 +2,7 @@
 #include "genotyper.hpp"
 #include "algorithms/topological_sort.hpp"
 #include "traversal_finder.hpp"
-#include "hash_map_set.hpp"
+#include "hash_map.hpp"
 
 //#define debug
 
@@ -1194,7 +1194,7 @@ Genotyper::get_affinities_nested(AugmentedGraph& aug,
 
     for (auto& in_path : snarl_paths) {
 
-        cerr << "Visiting Nested Snarl Path " << pb2json(in_path) << endl;
+        cerr << "Visiting Nested Snarl Path " << " (out of " << snarl_paths.size() << ") " << pb2json(in_path) << endl;
         
         // This makes below logic a bit easier, though it would be nicer (and very possible) to do all in one
         // pass:  Divide up our traverals into segments.  Each segment is either a nested snarl or a (maximal) run
