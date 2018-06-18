@@ -76,6 +76,8 @@ public:
         map<const Alignment*, vector<Affinity>> affinities;
         // traversals
         vector<SnarlTraversal> paths;
+        // used as heuristic to decide which traversal finder to use
+        size_t total_length;
     };
 
     // How many nodes max should we walk when checking if a path runs through a superbubble/snarl
@@ -192,17 +194,6 @@ public:
                              SnarlManager& manager,
                              const Snarl* snarl,
                              unordered_map<const Snarl*, unique_ptr<SnarlGenotypeInfo> >& dp_table);
-
-    /// Get the affinities of a snarl, using the affinities for any child snarls from dp_table
-    map<const Alignment*, vector<Affinity>>
-        get_nested_affinities(AugmentedGraph& augmented_graph,
-                              const map<string, const Alignment*>& reads_by_name,
-                              const Snarl* snarl,
-                              const pair<unordered_set<Node*>, unordered_set<Edge*> >& snarl_contents,
-                              const SnarlManager& manager,
-                              const vector<SnarlTraversal>& paths,
-                              bool fast_affinities,
-                              unordered_map<const Snarl*, unique_ptr<SnarlGenotypeInfo> >& dp_table);
         
     /**
      * Given an Alignment and a Snarl, compute a phred score for the quality of
@@ -228,11 +219,14 @@ public:
     static bool mapping_exits_side(const Mapping& mapping, const handle_t& side, const HandleGraph* graph);
 
     /**
-     * Check if a snarl is small enough to be covered by reads (very conservative)
-     */ 
-    static bool is_snarl_smaller_than_reads(const Snarl* snarl,
-                                            const pair<unordered_set<Node*>, unordered_set<Edge*> >& contents,
-                                            map<string, const Alignment*>& reads_by_name);
+     * Total the length of all nodes in snarl.  Used heuristically to determine which kind of 
+     * traversal finding we want to do on the snarl.
+     */
+    size_t total_snarl_length(const Snarl* snarl,
+                              const SnarlManager& manager,
+                              const pair<unordered_set<Node*>, unordered_set<Edge*> >& contents,
+                              unordered_map<const Snarl*, unique_ptr<SnarlGenotypeInfo> >& dp_table,
+                              size_t max_length);
         
     /**
      * Get traversals of a snarl in one of several ways. 
@@ -268,9 +262,8 @@ public:
     map<const Alignment*, vector<Affinity>> get_affinities(AugmentedGraph& aug,
                                                            const map<string, const Alignment*>& reads_by_name,
                                                            const Snarl* snarl,
-                                                           const pair<unordered_set<Node*>, unordered_set<Edge*> >& contents,
                                                            const SnarlManager& manager,
-                                                           const vector<SnarlTraversal>& superbubble_paths);
+                                                           const vector<SnarlTraversal>& snarl_paths);
         
     /**
      * Get affinities as above but using only string comparison instead of
@@ -279,10 +272,53 @@ public:
     map<const Alignment*, vector<Affinity>> get_affinities_fast(AugmentedGraph& aug,
                                                                 const map<string, const Alignment*>& reads_by_name,
                                                                 const Snarl* snarl,
-                                                                const pair<unordered_set<Node*>, unordered_set<Edge*> >& contents,
                                                                 const SnarlManager& manager,
-                                                                const vector<SnarlTraversal>& superbubble_paths,
+                                                                const vector<SnarlTraversal>& snarl_paths,
                                                                 bool allow_internal_alignments = false);
+
+    /**
+     * Get affinities using the table to lookup information for the child snarls.  Unlike the above two
+     * affinities functions, there is no re-mapping: affinities will only be scored if they are already
+     * in the GAM. 
+     */
+    map<const Alignment*, vector<Affinity>> get_affinities_nested(AugmentedGraph& aug,
+                                                                  const map<string, const Alignment*>& reads_by_name,
+                                                                  const Snarl* snarl,
+                                                                  const pair<unordered_set<Node*>, unordered_set<Edge*> >& contents,
+                                                                  const SnarlManager& manager,
+                                                                  vector<SnarlTraversal>& snarl_paths,
+                                                                  unordered_map<const Snarl*, unique_ptr<SnarlGenotypeInfo> >& dp_table);
+
+   /**
+    * Thread an alignment through a path.  Returns the first node/mapping index, last node/mapping index and 
+    * reverse flag.  
+    */
+   tuple<id_t, int, id_t, int, bool>
+   thread_read_through_traversals(const Alignment* aln,
+                                  const SnarlTraversal& path,
+                                  const unordered_map<id_t, int>& relevant_nodes,
+                                  const xg::pair_hash_set<pair<NodeSide, NodeSide> >& relevant_edges);
+     
+    /**
+     * Fill out an entry in the left-right dp table used for computing nested affinities above
+     */
+    void update_traversal_table(size_t i, AugmentedGraph& aug, const SnarlTraversal& in_path,
+                                const vector<pair<size_t, size_t> >& segments,
+                                const SnarlManager& manager,
+                                vector<vector<map<const Alignment*, Affinity> > >& affinity_table,
+                                vector<vector<int> >& backtrace_table,
+                                const unordered_map<const Snarl*, unique_ptr<SnarlGenotypeInfo> >& dp_table);
+
+    /**
+     * Trace back a Snarl traversal from the tables created in the nested affinity computation
+     */
+    SnarlTraversal trace_traversal_table(size_t i,
+                                         const SnarlTraversal& in_path,
+                                         const vector<pair<size_t, size_t> >& segments,
+                                         const SnarlManager& manager,
+                                         const vector<vector<int> >& backtrace_table,
+                                         unordered_map<const Snarl*, unique_ptr<SnarlGenotypeInfo> >& dp_table);
+
 
     /** 
      * Make a Locus for the Snarl.  Fills in the various alleles (from the snarl_paths) and computes 

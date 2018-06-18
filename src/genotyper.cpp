@@ -2,6 +2,7 @@
 #include "genotyper.hpp"
 #include "algorithms/topological_sort.hpp"
 #include "traversal_finder.hpp"
+#include "hash_map_set.hpp"
 
 //#define debug
 
@@ -257,9 +258,15 @@ void Genotyper::run_snarl_bottom_up(AugmentedGraph& augmented_graph,
 
     pair<unordered_set<Node*>, unordered_set<Edge*> > snarl_contents =
         manager.shallow_contents(snarl, graph, true);
-    
-    // Test if the snarl can be longer than the reads
-    bool read_bounded = is_snarl_smaller_than_reads(snarl, snarl_contents, reads_by_name);
+
+    // Heuristically compute length of snarl to see which kind of traversal finder we use
+    // Todo: just using total node length for now, which is way too conservative.  Would be
+    // better to get a closer estimate of max traversal length which is what we really want
+    size_t read_length = reads_by_name.begin()->second->sequence().length();
+    size_t snarl_length = total_snarl_length(snarl, manager, snarl_contents, dp_table, read_length);
+                                             
+    dp_table[snarl]->total_length = snarl_length;    
+    bool read_bounded = snarl_length <= read_length;
     TraversalAlg use_traversal_alg = traversal_alg;
     if (traversal_alg == TraversalAlg::Adaptive) {
         use_traversal_alg = read_bounded ? TraversalAlg::Reads : TraversalAlg::Representative;
@@ -293,17 +300,37 @@ void Genotyper::run_snarl_bottom_up(AugmentedGraph& augmented_graph,
         }
     }
 
-    // Compute the lengths of all the alleles
-    set<size_t> allele_lengths;
-    for(auto& path : paths) {
-        allele_lengths.insert(traversal_to_string(graph, path).size());
+    // Compute the affinities
+    if (read_bounded) {
+        // assume no nested traversals below
+        assert(use_traversal_alg == TraversalAlg::Reads); 
+        // Compute the lengths of all the alleles
+        set<size_t> allele_lengths;
+        if (realign_indels) {
+            for(auto& path : paths) {
+                allele_lengths.insert(traversal_to_string(graph, path).size());
+            }
+        }
+        // Snarl is small enough that we match all reads against all traversals, either with
+        // indel realignment or string match (_fast)
+        // TODO: it is possible that child snarls got computed and will be ignored.  should
+        // optimize this away somehow. 
+        if (allele_lengths.size() > 1) {
+            affinities = get_affinities(augmented_graph, reads_by_name, snarl, manager, paths);
+        } else {
+            affinities = get_affinities_fast(augmented_graph, reads_by_name, snarl, manager, paths);
+        }
+    } else {
+        // Snarl is big enough that we don't to have time to match all reads against all traversals
+        // so we compute supports directly from the given alignments.  Unlike above,
+        // this function uses the dp_table to avoid recomputing affinities for nested snarls
+
+        // Note: paths will be updated to contain only fully resolved paths if there are any
+        // nested traversals
+        affinities = get_affinities_nested(augmented_graph, reads_by_name, snarl, snarl_contents,
+                                           manager, paths, dp_table);
     }
-
-    // we toggle the affinity finder here.  Todo: this may be better done at a lower level
-    bool fast_affinities = !(allele_lengths.size() > 1 && (realign_indels || !read_bounded));
-    affinities = get_nested_affinities(augmented_graph, reads_by_name, snarl, snarl_contents, manager,
-                                       paths, fast_affinities, dp_table);
-
+              
     if(show_progress) {
         report_affinities(affinities, paths, graph);
     }
@@ -322,33 +349,6 @@ void Genotyper::run_snarl_bottom_up(AugmentedGraph& augmented_graph,
         // Add a genotype to the Locus for every one we looked at, in order by descending posterior
         *locus.add_genotype() = genotype;
     }
-}
-
-map<const Alignment*, vector<Genotyper::Affinity>>
-Genotyper::get_nested_affinities(AugmentedGraph& augmented_graph,
-                                 const map<string, const Alignment*>& reads_by_name,
-                                 const Snarl* snarl,
-                                 const pair<unordered_set<Node*>, unordered_set<Edge*> >& snarl_contents,
-                                 const SnarlManager& manager,
-                                 const vector<SnarlTraversal>& paths,
-                                 bool fast_affinities,
-                                 unordered_map<const Snarl*, unique_ptr<SnarlGenotypeInfo> >& dp_table ) {
-    // this runs a viterbi-like dynamic programming algorithm to find the traversals with the
-    // best affinities, 
-    // Get the affinities for all the paths
-    map<const Alignment*, vector<Affinity>> affinities;
-        
-    if(!fast_affinities) {
-        // This is an indel, because we can change lengths. Use the slow route to do indel realignment.
-        affinities = get_affinities(augmented_graph, reads_by_name, snarl, snarl_contents, manager, paths);
-    } else {
-        // Just use string comparison. Don't re-align when
-        // length can't change, or when indle realignment is
-        // off.
-        affinities = get_affinities_fast(augmented_graph, reads_by_name, snarl, snarl_contents, manager, paths);
-    }
-
-    return affinities;
 }
 
 pair<pair<int64_t, int64_t>, bool> Genotyper::get_snarl_reference_bounds(const Snarl* snarl, const PathIndex& index,
@@ -450,21 +450,28 @@ int Genotyper::alignment_qual_score(VG& graph, const Snarl* snarl, const Alignme
     return round(total);
 }
 
-bool Genotyper::is_snarl_smaller_than_reads(const Snarl* snarl,
-                                            const pair<unordered_set<Node*>, unordered_set<Edge*> >& contents,
-                                            map<string, const Alignment*>& reads_by_name) {
-    size_t read_length = reads_by_name.empty() ? 50 : reads_by_name.begin()->second->sequence().length();
+size_t Genotyper::total_snarl_length(const Snarl* snarl,
+                                     const SnarlManager& manager,
+                                     const pair<unordered_set<Node*>, unordered_set<Edge*> >& contents,
+                                     unordered_map<const Snarl*, unique_ptr<SnarlGenotypeInfo> >& dp_table,
+                                     size_t max_length) {
+
     size_t snarl_total_length = 0;
-    for (auto snarl_node : contents.first) {
+
+    const vector<const Snarl*>& children = manager.children_of(snarl);
+    for (size_t i = 0; i < children.size() && snarl_total_length < max_length; ++i) {
+        snarl_total_length += dp_table[children[i]]->total_length;
+    }
+
+    for (auto i = contents.first.begin(); i != contents.first.end() && snarl_total_length < max_length; ++i) {
+        const Node* snarl_node = *i;
         if (snarl_node->id() != snarl->start().node_id() &&
             snarl_node->id() != snarl->end().node_id()) {
             snarl_total_length += snarl_node->sequence().length();
         }
-        if (snarl_total_length >= read_length) {
-            return false;
-        }
     }
-    return true;
+
+    return snarl_total_length;
 }
 
 vector<SnarlTraversal> Genotyper::get_snarl_traversals(AugmentedGraph& augmented_graph, SnarlManager& manager,
@@ -704,7 +711,6 @@ map<const Alignment*, vector<Genotyper::Affinity>>
     Genotyper::get_affinities(AugmentedGraph& aug,
                               const map<string, const Alignment*>& reads_by_name,
                               const Snarl* snarl,
-                              const pair<unordered_set<Node*>, unordered_set<Edge*> >& contents,
                               const SnarlManager& manager,
                               const vector<SnarlTraversal>& snarl_paths) {
 
@@ -719,6 +725,10 @@ map<const Alignment*, vector<Genotyper::Affinity>>
 
     // What IDs are visited by these reads?
     unordered_set<id_t> relevant_ids;
+
+    // Get the contents
+    pair<unordered_set<Node*>, unordered_set<Edge*> > contents =
+        manager.deep_contents(snarl, aug.graph, true);
 
 #ifdef debug
 #pragma omp critical (cerr)
@@ -1023,7 +1033,6 @@ map<const Alignment*, vector<Genotyper::Affinity> >
 Genotyper::get_affinities_fast(AugmentedGraph& aug,
                                const map<string, const Alignment*>& reads_by_name,
                                const Snarl* snarl,
-                               const pair<unordered_set<Node*>, unordered_set<Edge*> >& contents,
                                const SnarlManager& manager,
                                const vector<SnarlTraversal>& snarl_paths,
                                bool allow_internal_alignments) {
@@ -1034,6 +1043,10 @@ Genotyper::get_affinities_fast(AugmentedGraph& aug,
     // What reads are relevant to this ultrabubble?
     set<string> relevant_read_names;
 
+    // Get the contents
+    pair<unordered_set<Node*>, unordered_set<Edge*> > contents =
+        manager.deep_contents(snarl, aug.graph, true);
+    
 #ifdef debug
 #pragma omp critical (cerr)
     cerr << "Ultrabubble contains " << contents.first.size() << " nodes" << endl;
@@ -1154,14 +1167,320 @@ Genotyper::get_affinities_fast(AugmentedGraph& aug,
 #pragma omp critical (cerr)
             cerr << "Warning! Bubble sequence " << seq << " supports nothing!" << endl;
         }
-
-
+        
+        
     }
-
-
+    
+    
     // After scoring all the reads against all the versions of the ultrabubble,
     // return the affinities
     return to_return;
+}
+
+map<const Alignment*, vector<Genotyper::Affinity>>
+Genotyper::get_affinities_nested(AugmentedGraph& aug,
+                                 const map<string, const Alignment*>& reads_by_name,
+                                 const Snarl* snarl,
+                                 const pair<unordered_set<Node*>, unordered_set<Edge*> >& contents,
+                                 const SnarlManager& manager,
+                                 vector<SnarlTraversal>& snarl_paths,
+                                 unordered_map<const Snarl*, unique_ptr<SnarlGenotypeInfo> >& dp_table) {
+    
+    // We're going to build this up gradually, appending to all the vectors.
+    map<const Alignment*, vector<Affinity>> to_return;
+
+    // The input paths may be nested.  We build of a list of fully resolved paths (all visits are nodes)
+    vector<SnarlTraversal> out_paths;
+
+    for (auto& in_path : snarl_paths) {
+
+        cerr << "Visiting Nested Snarl Path " << pb2json(in_path) << endl;
+        
+        // This makes below logic a bit easier, though it would be nicer (and very possible) to do all in one
+        // pass:  Divide up our traverals into segments.  Each segment is either a nested snarl or a (maximal) run
+        // of nodes between snarls. 
+        vector<pair<size_t, size_t> > segments;
+        size_t first = 0;
+        for (size_t i = 0; i < in_path.visit_size(); ++i) {
+            if (in_path.visit(i).node_id() == 0) {
+                // everything up until the snarl
+                if (i != first) {
+                    segments.push_back(make_pair(first, i-1));
+                }
+                // the snarl itself
+                segments.push_back(make_pair(i, i));
+                first = i + 1;
+            } else if (i == in_path.visit_size() - 1) {
+                segments.push_back(make_pair(first, i));
+                first = i + 1;
+            }
+        }
+
+        // For every segment, we keep track of the top 2 affinities built of from the start of the
+        // snarl till that point.  so affinity_table[3][0] is the top affinity for sub-traversal
+        // up to the end of segment 3 (affinity_table[3][1] would be the next best etc but we only
+        // keep 2 for now)
+        vector<vector<map<const Alignment*, Affinity> > > affinity_table(segments.size());
+
+        // And some backtrace information linking the table entries.  It has the
+        // same shape and indexing as affinity table.  For each affinity map we
+        // store a link to the snarl travers (path) in the previous nested snarl from
+        // which we got our subtraversal.
+        vector<vector<int> > backtrace_table(segments.size());
+
+        // Scan left-to-right building up the 2 best traversals and their affinities
+        for (size_t i = 0; i < segments.size(); ++i) {
+            cerr << "updating traversal table for segment " << segments[i].first << "-" << segments[i].second << endl;
+            update_traversal_table(i, aug, in_path, segments, manager, affinity_table, backtrace_table, dp_table);
+        }
+
+        // Extract the traversals from the table and add them to our return structure
+        for (size_t i = 0; i < backtrace_table.back().size(); ++i) {
+
+            cerr << "tracing " << i << endl;
+            out_paths.push_back(trace_traversal_table(i, in_path, segments, manager, backtrace_table, dp_table));
+
+            // update our affinity results
+            const map<const Alignment*, Affinity>& affinities = affinity_table.back()[i];
+            for (auto& affinity : affinities) {
+                pair<map<const Alignment*, vector<Affinity>>::iterator, bool> ret = to_return.insert(
+                    make_pair(affinity.first, vector<Affinity>()));
+                // we need an affinity for every path.  assume no affinity is equivalent to an empty affinity
+                if (ret.first->second.size() < out_paths.size()) {
+                    ret.first->second.resize(out_paths.size());
+                    ret.first->second[out_paths.size() - 1] = affinity.second;
+                }
+            }
+        }
+    }
+
+    // replace the paths that contain snarls with the non-nested paths
+    swap(snarl_paths, out_paths);
+
+    cerr << "returning " << snarl_paths.size() << " paths";
+    for (auto xx : to_return) {
+        cerr << xx.first << " " << xx.second.size() << " consist ";
+        for (auto yy : xx.second) {
+            cerr << yy.consistent << " , ";
+        }
+        cerr << endl;
+    }
+    
+    return to_return;
+}
+
+tuple<id_t, int, id_t, int, bool>
+Genotyper::thread_read_through_traversals(const Alignment* aln,
+                                          const SnarlTraversal& path,
+                                          const unordered_map<id_t, int>& relevant_nodes,
+                                          const xg::pair_hash_set<pair<NodeSide, NodeSide> >& relevant_edges) {
+
+    id_t entry_node = 0; // where the read enters the segment
+    int entry_mapping = -1; // where in the read it enters
+    id_t exit_node = 0; // where the read exits the segment
+    int exit_mapping = -1; // where in the read it exits
+    
+    // scan through the read to find the first point at which it threads through
+    // the snarl
+    for (size_t i = 0; i < aln->path().mapping_size(); ++i) {
+        const Mapping& mapping = aln->path().mapping(i);
+        id_t node = mapping.position().node_id();
+        auto rn_it = relevant_nodes.find(node);
+
+        // The read is in our traversal
+        if (rn_it != relevant_nodes.end()) {
+
+            // we enter here
+            if (entry_node == 0) {
+                entry_node = node;
+                entry_mapping = i;
+            }
+
+            // our next edge is not in the traversal, so we exit here
+            if (exit_node == 0 && i < aln->path().mapping_size() - 1) {
+                Position next_pos = aln->path().mapping(i + 1).position();
+                Position pos = mapping.position();
+                pair<NodeSide, NodeSide> edge = make_pair(NodeSide(pos.node_id(), !pos.is_reverse()),
+                                                          NodeSide(next_pos.node_id(), next_pos.is_reverse()));
+                if (!relevant_edges.count(minmax(edge.first, edge.second))) {
+                    exit_node = node;
+                    exit_mapping = i;
+                }
+            }
+        } else {
+
+            if (entry_node != 0 && exit_node != 0) {
+                exit_node = node;
+                exit_mapping = i;
+            }
+        }
+        if (exit_node != 0) {
+            assert(entry_node != 0);
+            break;
+        }
+    }
+
+
+    // Does our alignment map backward to the traversal.  
+    bool reverse = false;
+    if (entry_node == exit_node) {
+        reverse = aln->path().mapping(entry_mapping).position().is_reverse() !=
+            path.visit(relevant_nodes.at(entry_node)).backward();
+    } else {
+        reverse = entry_mapping > exit_mapping;
+    }
+
+    return make_tuple(entry_node, entry_mapping, exit_node, exit_mapping, reverse);
+}
+
+void Genotyper::update_traversal_table(size_t i, AugmentedGraph& aug, const SnarlTraversal& in_path,
+                                       const vector<pair<size_t, size_t> >& segments,
+                                       const SnarlManager& manager,
+                                       vector<vector<map<const Alignment*, Affinity> > >& affinity_table,
+                                       vector<vector<int> >& backtrace_table,
+                                       const unordered_map<const Snarl*, unique_ptr<SnarlGenotypeInfo> >& dp_table) {
+    // we are updating the table for segment i
+    const Visit& start_visit = in_path.visit(segments[i].first);
+    const Visit& end_visit = in_path.visit(segments[i].second);
+
+    // we begin by getting the top two affinities for the segment
+    vector<map<const Alignment*, Affinity> >&  affinities = affinity_table[i];
+
+    // if the segment is a run of nodes, then we compute affinities from the Alignments
+    if (start_visit.node_id() > 0) {
+        affinities.resize(1);
+        assert(end_visit.node_id() > 0);
+
+        // every read that touches a node in the segment
+        unordered_set<const Alignment*> relevant_reads;
+        // every node in the segment
+        unordered_map<id_t, int> relevant_nodes;
+        // every edge in the segment
+        xg::pair_hash_set<pair<NodeSide, NodeSide> > relevant_edges;
+
+        for (size_t j = segments[i].first; j <= segments[i].second; ++j) {
+            for (const Alignment* aln : aug.get_alignments(in_path.visit(j).node_id())) {
+                relevant_reads.insert(aln);
+            }
+            relevant_nodes[in_path.visit(j).node_id()] = j;
+            if (j > segments[i].first) {
+                pair<NodeSide, NodeSide> edge = make_pair(NodeSide(in_path.visit(j-1).node_id(),
+                                                                   !in_path.visit(j-1).backward()),
+                                                          NodeSide(in_path.visit(j).node_id(),
+                                                                   in_path.visit(j).backward()));
+                for (const Alignment* aln : aug.get_alignments(edge)) {
+                    relevant_reads.insert(aln);
+                }
+                relevant_edges.insert(minmax(edge.first, edge.second));
+            }
+        }
+
+        for (const auto aln : relevant_reads) {
+            
+            id_t entry_node = 0; // where the read enters the segment
+            int entry_mapping = -1; // where in the read it enters
+            id_t exit_node = 0; // where the read exits the segment
+            int exit_mapping = -1; // where in the read it exits
+            bool reverse = false; // are we reverse-mapped to the segment
+            std::tie(entry_node, entry_mapping, exit_node, exit_mapping, reverse) =
+                thread_read_through_traversals(aln, in_path, relevant_nodes, relevant_edges);
+
+            // the read either starts inside the segment or comes from the segment endpoint
+            bool valid_entry = entry_mapping == 0 || entry_mapping == aln->path().mapping_size() - 1 ||
+                (entry_mapping >= 0 &&
+                 (aln->path().mapping(entry_mapping).position().node_id() == start_visit.node_id() ||
+                  aln->path().mapping(entry_mapping).position().node_id() == end_visit.node_id()));
+            // as above but for end of read
+            bool valid_exit = exit_mapping <= 0 || exit_mapping == aln->path().mapping_size() - 1 ||
+                (exit_mapping >= 0 &&
+                 (aln->path().mapping(exit_mapping).position().node_id() == start_visit.node_id() ||
+                  aln->path().mapping(exit_mapping).position().node_id() == end_visit.node_id()));
+
+            Affinity affinity;
+            
+            // we are consistent if the read properly threads the segment as determined above
+            affinity.consistent = valid_entry && valid_exit;
+
+            cerr << " ve " << valid_entry << " vex " << valid_exit
+                 << " en " << entry_node << " em " << entry_mapping
+                 << " xn " << exit_node << " xm " << exit_mapping << endl;
+
+            // we are backwards if we went backwards along the read
+            affinity.is_reverse = exit_mapping < entry_mapping;
+
+            affinities[0][aln] = affinity;
+        }
+
+        // todo: fix
+        backtrace_table[i].push_back(0);
+    }
+    
+    // otherwise, we get the affinities from the dp_table
+    else {
+        // pull up the child snarl
+        assert(segments[i].first == segments[i].second);
+        const Snarl* child_snarl = manager.manage(start_visit.snarl());
+
+        const SnarlGenotypeInfo& dp_entry = *dp_table.find(child_snarl)->second;
+        
+        // we only look at top diploid genotype for now.  Todo: expand properly! 
+        const vector<Genotype>& best_genotypes = dp_entry.genotypes[2];
+        if (!best_genotypes.empty()) {
+            affinities.resize(2);
+            for (const auto afit : dp_entry.affinities) {
+                affinities[0][afit.first] = afit.second[best_genotypes[0].allele(0)];
+                affinities[1][afit.first] = afit.second[best_genotypes[0].allele(1)];
+            }
+        }
+
+        backtrace_table[i].push_back(best_genotypes[0].allele(0));
+        backtrace_table[i].push_back(best_genotypes[0].allele(1));
+    }
+
+    // now we take the best combinations of traversals with using the previous table entry
+    // todo!
+}
+
+SnarlTraversal Genotyper::trace_traversal_table(size_t i,
+                                                const SnarlTraversal& in_path,
+                                                const vector<pair<size_t, size_t> >& segments,
+                                                const SnarlManager& manager,
+                                                const vector<vector<int> >& backtrace_table,
+                                                unordered_map<const Snarl*, unique_ptr<SnarlGenotypeInfo> >& dp_table) {
+    // fill this up backwards
+    vector<Visit> backtrace;
+    for (int j = segments.size() -1; j >= 0; --j) {
+        const Visit& start_visit = in_path.visit(segments[j].first);
+        const Visit& end_visit = in_path.visit(segments[j].second);
+
+        // add our run of nodes to the traversal
+        if (start_visit.node_id()) {
+            assert(end_visit.node_id() != 0);
+            for (int k = segments[j].second; k >= (int)segments[j].first; --k) {
+                backtrace.push_back(in_path.visit(k));
+            }
+        }
+
+        // add our nested subtraversal, sepcified by the backtrace table
+        else {
+            // pull up the child snarl
+            assert(segments[j].first == segments[j].second);
+            const Snarl* child_snarl = manager.manage(start_visit.snarl());
+            // get its subtraversal out of the dp_table
+            int allele = backtrace_table[j][i];
+            SnarlTraversal& allele_path = dp_table[child_snarl]->paths[allele];
+            for (size_t k = 0; k < allele_path.visit_size(); ++k) {
+                backtrace.push_back(allele_path.visit(k));
+            }
+            // TODO: Handle snarl orientation!!!
+        }
+    }
+    SnarlTraversal traversal;
+    for (auto visit = backtrace.rbegin(); visit != backtrace.rend(); ++visit) {
+        *traversal.add_visit() = *visit;
+    }
+
+    return traversal;
 }
 
 double Genotyper::get_genotype_log_likelihood(VG& graph, const Snarl* snarl, const vector<int>& genotype,
