@@ -47,7 +47,9 @@ public:
     double downsample_probability = 1.0;
     // Samtools-compatible internal seed mask, for deciding which read pairs to keep.
     // To be generated with rand() after srand() from the user-visible seed.
-    uint32_t downsample_seed_mask = 0;        
+    uint32_t downsample_seed_mask = 0;
+    // Filter out reads that map along given path (ignoring edits)
+    string ref_filter_path;
     // default to 1 thread (as opposed to all)
     int threads = 1;
 
@@ -64,9 +66,10 @@ public:
         vector<size_t> repeat;
         vector<size_t> defray;
         vector<size_t> random;
+        vector<size_t> ref_path;
         Counts() : read(2, 0), filtered(2, 0), wrong_name(2, 0), min_score(2, 0),
                    max_overhang(2, 0), min_end_matches(2, 0), min_mapq(2, 0),
-                   split(2, 0), repeat(2, 0), defray(2, 0), random(2, 0) {}
+                   split(2, 0), repeat(2, 0), defray(2, 0), random(2, 0), ref_path(2, 0) {}
         Counts& operator+=(const Counts& other) {
             for (int i = 0; i < 2; ++i) {
                 read[i] += other.read[i];
@@ -80,6 +83,7 @@ public:
                 repeat[i] += other.repeat[i];
                 defray[i] += other.defray[i];
                 random[i] += other.random[i];
+                ref_path[i] += other.ref_path[i];
             }
             return *this;
         }
@@ -149,7 +153,13 @@ private:
      * kept. Returns true if the read should stay, and false if it should be
      * removed. Always accepts or rejects paired reads together.
      */
-    bool sample_read(const Alignment& read); 
+    bool sample_read(const Alignment& read);
+
+    /**
+     * Does a read follow the reference path?  Returns true if it doesn't follow any
+     * *known* SNP or INDEL edges.  Events described in Edits are ignored. 
+     */
+    bool follows_path(xg::XG* index, size_t path_rank, const Alignment& alignment);
     
 };
 }

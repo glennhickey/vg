@@ -483,7 +483,56 @@ bool ReadFilter::sample_read(const Alignment& aln) {
     return (sample < downsample_probability);
 }
 
+bool ReadFilter::follows_path(xg::XG* index, size_t path_rank, const Alignment& alignment) {
+    
+    if (alignment.path().mapping_size() == 0) {
+        return false;
+    }
 
+    const Mapping& mapping = alignment.path().mapping(0);
+    auto prev_results = index->oriented_occurrences_on_path(mapping.position().node_id(), path_rank);
+    
+    for (size_t i = 1; i < alignment.path().mapping_size(); ++i) {
+        const Mapping& mapping = alignment.path().mapping(i);
+        auto results = index->oriented_occurrences_on_path(mapping.position().node_id(), path_rank);
+
+        if (prev_results.size() > 1 || results.size() > 1) {
+            // Multiple node occurences in path: we don't handle
+            throw runtime_error("Cyclic reference path not supported");
+        }
+        else if (prev_results.size() == 1 && results.size() == 1) {
+            // Both nodes on reference
+            const Mapping& prev_mapping = alignment.path().mapping(i-1);
+
+            // Both nodes going forward through the reference path
+            if (results[0].first == prev_results[0].first + 1) {
+                if (mapping.position().is_reverse() != results[0].second ||
+                    prev_mapping.position().is_reverse() != prev_results[0].second) {
+                    // orientations not the same as path
+                    return false;
+                }
+            }
+            // Both nodes going backward along reference path
+            else if (results[0].first + 1 == prev_results[0].first) {
+                if (mapping.position().is_reverse() == results[0].second ||
+                    prev_mapping.position().is_reverse() == prev_results[0].second) {
+                    // orientations not the same as path
+                    return false;
+                }
+            }
+            else {
+                // nodes skip over nodes/edges in path
+                return false;
+            }
+        }
+        else {
+            return false;
+        }
+        prev_results = results;
+    }
+    return true;
+}                                                                                        
+ 
 int ReadFilter::filter(istream* alignment_stream, xg::XG* xindex) {
 
     // name helper for output
@@ -513,9 +562,17 @@ int ReadFilter::filter(istream* alignment_stream, xg::XG* xindex) {
         }
     }
 
-    if(defray_length > 0 && xindex == nullptr) {
-        cerr << "xg index required for end de-fraying" << endl;
+    if ((defray_length > 0 || !ref_filter_path.empty()) && xindex == nullptr) {
+        cerr << "xg index required for end de-fraying or ref path filtering" << endl;
         return 1;
+    }
+    size_t ref_filter_path_rank = 0;
+    if (!ref_filter_path.empty()) {
+        ref_filter_path_rank = xindex->path_rank(ref_filter_path);
+        if (ref_filter_path_rank == 0) {
+            cerr << "path " << ref_filter_path << " not found in xg index" << endl;
+            return 1;
+        }
     }
     
     if (regions.empty()) {
@@ -775,6 +832,10 @@ int ReadFilter::filter(istream* alignment_stream, xg::XG* xindex) {
             ++counts.random[co];
             keep = false;
         }
+        if ((keep || verbose) && !ref_filter_path.empty() && follows_path(xindex, ref_filter_path_rank, aln)) {
+            ++counts.ref_path[co];
+            keep = false;
+        }                                                                          
         if (!keep) {
             ++counts.filtered[co];
         }
@@ -821,6 +882,8 @@ int ReadFilter::filter(istream* alignment_stream, xg::XG* xindex) {
              << "Min Quality Filter (secondary):   " << counts.min_mapq[1] << endl
              << "Random Filter (primary):      " << counts.random[0] << endl
              << "Random Filter (secondary):   " << counts.random[1] << endl
+             << "Ref Path Filter (primary):      " << counts.ref_path[0] << endl
+             << "Ref Path Filter (secondary):   " << counts.ref_path[1] << endl            
                         
             
              << endl;

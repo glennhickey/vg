@@ -45,6 +45,7 @@ void help_filter(char** argv) {
          << "    -D, --defray-ends N     clip back the ends of reads that are ambiguously aligned, up to N bases" << endl
          << "    -C, --defray-count N    stop defraying after N nodes visited (used to keep runtime in check) [default=99999]" << endl
          << "    -d, --downsample S.P    filter out all but the given portion 0.P of the reads. S may be an integer seed as in SAMtools" << endl
+         << "    -p, --filter-path P     filter out reads that map entirely to given reference path (ignoring edits)" << endl
          << "    -t, --threads N         number of threads [1]" << endl;
 }
 
@@ -89,12 +90,13 @@ int main_filter(int argc, char** argv) {
                 {"defray-ends", required_argument, 0, 'D'},
                 {"defray-count", required_argument, 0, 'C'},
                 {"downsample", required_argument, 0, 'd'},
-                {"threads", required_argument, 0, 't'},
+                {"downsample", required_argument, 0, 'd'},
+                {"filter-path", required_argument, 0, 'p'},
                 {0, 0, 0, 0}
             };
 
         int option_index = 0;
-        c = getopt_long (argc, argv, "n:s:r:Od:e:fauo:m:Sx:R:B:Ac:vq:E:D:C:d:t:",
+        c = getopt_long (argc, argv, "n:s:r:Od:e:fauo:m:Sx:R:B:Ac:vq:E:D:C:d:p:t:",
                          long_options, &option_index);
 
         /* Detect the end of the options. */
@@ -190,6 +192,9 @@ int main_filter(int argc, char** argv) {
                     }
                 }
             }
+            break;
+        case 'p':
+            filter.ref_filter_path = optarg;
             break;
         case 't':
             filter.threads = parse<int>(optarg);
